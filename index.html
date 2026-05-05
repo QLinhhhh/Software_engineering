@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Hệ Thống Ôn Tập - Công Nghệ Phần Mềm</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; line-height: 1.6; background-color: #f9f9f9; }
+        .controls { display: flex; flex-wrap: wrap; gap: 15px; margin-bottom: 20px; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); align-items: center; }
+        select, input[type="number"] { padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+        select { flex: 1; min-width: 250px; }
+        input[type="number"] { width: 100px; }
+        button { padding: 10px 25px; cursor: pointer; background: #2c3e50; color: #fff; border: none; border-radius: 4px; font-weight: bold; font-size: 16px; transition: background 0.2s; }
+        button:hover { background: #1a252f; }
+        .stats { font-weight: bold; color: #e74c3c; }
+        
+        /* Bảng điểm */
+        .score-board { display: none; background: #e8f4f8; border-left: 4px solid #3498db; padding: 15px 20px; margin-bottom: 30px; border-radius: 4px; font-size: 1.2em; font-weight: bold; color: #2c3e50; box-shadow: 0 1px 3px rgba(0,0,0,0.1); position: sticky; top: 0; z-index: 100;}
+        .score-board span { color: #e74c3c; font-size: 1.3em; }
+
+        .question-block { margin-bottom: 30px; padding: 25px; background: #fff; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        .question-block h3 { margin-top: 0; color: #2c3e50; font-size: 1.1em; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; }
+        .option { 
+            display: block; margin: 10px 0; padding: 15px; 
+            border: 1px solid #dcdde1; border-radius: 6px; cursor: pointer; 
+            transition: all 0.2s; background: #fdfdfd;
+        }
+        .option:hover:not(.disabled) { background-color: #f1f2f6; border-color: #a4b0be; }
+        .option strong { color: #2c3e50; margin-right: 8px; }
+        
+        /* Trạng thái UI */
+        .correct { background-color: #d4edda !important; border-color: #c3e6cb !important; color: #155724 !important; }
+        .wrong { background-color: #f8d7da !important; border-color: #f5c6cb !important; color: #721c24 !important; text-decoration: line-through; opacity: 0.8; }
+        .disabled { pointer-events: none; }
+    </style>
+</head>
+<body>
+
+    <div class="controls">
+        <select id="topicSelect"></select>
+        <input type="number" id="numQuestions" placeholder="Số câu" min="1" value="10">
+        <span class="stats" id="dbStats">Đang nạp dữ liệu...</span>
+        <button id="startBtn">Tạo Bộ Đề</button>
+    </div>
+
+    <div id="scoreBoard" class="score-board">
+        Điểm số: <span id="correctCount">0</span> / <span id="totalTestCount">0</span> câu.
+    </div>
+
+    <div id="quizContainer"></div>
+
+    <script>
+        let database = [];
+        
+        // Quản lý trạng thái (State)
+        let currentScore = 0;
+        let answeredQuestions = 0;
+
+        // Thuật toán tráo mảng Fisher-Yates
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+        }
+
+        // Trình biên dịch (Parser) bóc tách văn bản thô
+        function parseRawData(rawText) {
+            const categories = [];
+            const sections = rawText.split(/NGÂN HÀNG TRẮC NGHIỆM:/).filter(s => s.trim().length > 0);
+
+            sections.forEach(sec => {
+                const lines = sec.trim().split('\n');
+                const title = lines[0].trim(); 
+                const questions = [];
+
+                const qRegex = /Câu \d+:\s*([\s\S]*?)A\.\s*([\s\S]*?)B\.\s*([\s\S]*?)C\.\s*([\s\S]*?)D\.\s*([\s\S]*?)Đáp án đúng:\s*([A-D])/g;
+                let match;
+                
+                while ((match = qRegex.exec(sec)) !== null) {
+                    questions.push({
+                        question: match[1].trim(),
+                        options: [ match[2].trim(), match[3].trim(), match[4].trim(), match[5].trim() ],
+                        correctLetter: match[6].trim()
+                    });
+                }
+
+                if (questions.length > 0) {
+                    categories.push({ name: title, questions: questions });
+                }
+            });
+            return categories;
+        }
+
+        // Khởi tạo UI
+        document.addEventListener("DOMContentLoaded", () => {
+            const rawText = document.getElementById('rawData').value;
+            database = parseRawData(rawText);
+            
+            const topicSelect = document.getElementById('topicSelect');
+            database.forEach((cat, index) => {
+                const opt = document.createElement('option');
+                opt.value = index;
+                opt.textContent = `Phần ${index + 1}: ${cat.name}`;
+                topicSelect.appendChild(opt);
+            });
+            
+            const optAll = document.createElement('option');
+            optAll.value = 'all';
+            optAll.textContent = 'Tổng hợp (Ngẫu nhiên tất cả)';
+            topicSelect.appendChild(optAll);
+
+            updateStats();
+            topicSelect.addEventListener('change', updateStats);
+        });
+
+        function updateStats() {
+            const val = document.getElementById('topicSelect').value;
+            let max = 0;
+            if (val === 'all') {
+                max = database.reduce((sum, cat) => sum + cat.questions.length, 0);
+            } else {
+                max = database[parseInt(val)].questions.length;
+            }
+            document.getElementById('dbStats').textContent = `(Kho: ${max} câu)`;
+            document.getElementById('numQuestions').max = max;
+        }
+
+        // Hàm cập nhật hiển thị điểm lên DOM
+        function updateScoreBoard() {
+            document.getElementById('correctCount').textContent = currentScore;
+        }
+
+        // Sinh bộ đề
+        document.getElementById('startBtn').addEventListener('click', () => {
+            const val = document.getElementById('topicSelect').value;
+            let num = parseInt(document.getElementById('numQuestions').value);
+            
+            let pool = [];
+            if (val === 'all') {
+                database.forEach(cat => pool = pool.concat(cat.questions));
+            } else {
+                pool = [...database[parseInt(val)].questions];
+            }
+
+            if (isNaN(num) || num <= 0) num = 10;
+            const finalNum = Math.min(num, pool.length);
+            document.getElementById('numQuestions').value = finalNum;
+
+            shuffleArray(pool);
+            const selectedQuestions = pool.slice(0, finalNum);
+            
+            // Reset trạng thái điểm số mỗi khi tạo đề mới
+            currentScore = 0;
+            answeredQuestions = 0;
+            updateScoreBoard();
+            document.getElementById('scoreBoard').style.display = 'block'; // Hiện bảng điểm
+            document.getElementById('totalTestCount').textContent = finalNum;
+            renderQuiz(selectedQuestions);
+        });
+
+        // Render giao diện
+        function renderQuiz(questions) {
+            const container = document.getElementById('quizContainer');
+            container.innerHTML = ''; 
+            
+            questions.forEach((q, qIndex) => {
+                const block = document.createElement('div');
+                block.className = 'question-block';
+                
+                const title = document.createElement('h3');
+                title.textContent = `Câu ${qIndex + 1}: ${q.question}`;
+                block.appendChild(title);
+                
+                const optionsContainer = document.createElement('div');
+                
+                const origCorrectIdx = q.correctLetter === 'A' ? 0 : q.correctLetter === 'B' ? 1 : q.correctLetter === 'C' ? 2 : 3;
+
+                let opts = q.options.map((optText, i) => ({
+                    text: optText,
+                    isCorrect: i === origCorrectIdx
+                }));
+
+                shuffleArray(opts);
+                const labels = ['A', 'B', 'C', 'D'];
+                
+                opts.forEach((optObj, optIndex) => {
+                    const optDiv = document.createElement('div');
+                    optDiv.className = 'option';
+                    optDiv.innerHTML = `<strong>${labels[optIndex]}.</strong> ${optObj.text}`;
+                    
+                    optDiv.addEventListener('click', function() {
+                        // Vô hiệu hóa DOM để không click được nữa
+                        Array.from(optionsContainer.children).forEach(child => child.classList.add('disabled'));
+                        
+                        // Cập nhật State
+                        answeredQuestions++;
+                        if (optObj.isCorrect) {
+                            this.classList.add('correct');
+                            currentScore++;
+                        } else {
+                            this.classList.add('wrong');
+                            Array.from(optionsContainer.children).forEach((child, idx) => {
+                                if (opts[idx].isCorrect) child.classList.add('correct');
+                            });
+                        }
+                        
+                        // Đẩy State mới ra giao diện
+                        updateScoreBoard();
+                    });
+                    
+                    optionsContainer.appendChild(optDiv);
+                });
+                
+                block.appendChild(optionsContainer);
+                container.appendChild(block);
+            });
+        }
+    </script>
+
+<textarea id="rawData" style="display:none;">
+NGÂN HÀNG TRẮC NGHIỆM: TỔNG QUAN CÔNG NGHỆ PHẦN MỀM (50 CÂU)
+Câu 1:  Công nghệ phần mềm (SE) được định nghĩa là gì theo Pressman?
+A. Là việc lập trình và kiểm thử phần mềm bằng các ngôn ngữ hiện đại.
+B. Là bộ môn tích hợp cả quy trình, các phương pháp và các công cụ để phát triển phần mềm máy tính.
+C. Là quá trình bảo trì phần mềm sau khi đã bàn giao cho khách hàng.
+D. Là việc viết tài liệu cho các hệ thống thông tin.  Đáp án đúng:  B
+Câu 2:  Một trong những đặc trưng cơ bản nhất của phần mềm là gì?
+A. Bị mài mòn theo thời gian giống như phần cứng.
+B. Được lắp ráp hoàn toàn từ các linh kiện có sẵn.
+C. Không bị mòn cũ nhưng thoái hóa theo thời gian do thay đổi yêu cầu và môi trường.
+D. Luôn có hình dạng vật lý rõ ràng.  Đáp án đúng:  C
+Câu 3:  Theo thống kê về vòng đời phần mềm, chi phí cho giai đoạn nào thường chiếm tỷ trọng lớn nhất (có thể lên tới 67%)?
+A. Phân tích yêu cầu. B. Thiết kế kiến trúc. C. Lập trình và Kiểm thử. D. Bảo trì.
+Đáp án đúng:  D
+Câu 4:  Các yếu tố cơ bản của Kỹ nghệ phần mềm (SE) bao gồm những gì?
+A. Phần cứng, phần mềm, con người. B. Thủ tục (Procedures), Phương pháp (Methods) và Công cụ (Tools).
+C. Ngôn ngữ lập trình, Cơ sở dữ liệu, Giao diện mạng.
+D. Khách hàng, Lập trình viên, Người kiểm thử.  Đáp án đúng:  B
+Câu 5:  Theo mô hình chất lượng ISO 9126, "Tính dễ hiểu, dễ học và tính hấp dẫn" thuộc về tiêu chí nào của phần mềm?, A. Tính khả dụng (Usability).
+B. Tính tin cậy (Reliability). C. Tính hiệu quả (Efficiency). D. Khả năng bảo trì (Maintainability).
+Đáp án đúng:  A
+Câu 6:  Yếu tố nào sau đây là nguyên nhân chính dẫn đến sự tiến hóa (thay đổi) của phần mềm?
+A. Nhu cầu con người thay đổi và nghiệp vụ thay đổi. B. Phần mềm bị hỏng hóc vật lý.
+C. Sức ép từ thời gian lập trình quá dài. D. Do máy tính bị virus.
+Đáp án đúng:  A
+Câu 7:  Công cụ CASE (Computer Aided Software Engineering) dùng để làm gì?
+A. Để quản lý tài chính doanh nghiệp. B. Trợ giúp tự động/bán tự động các phương pháp trong các công đoạn phát triển phần mềm.
+C. Dùng để cài đặt hệ điều hành. D. Chỉ dùng để thiết kế giao diện đồ họa.
+Đáp án đúng:  B
+Câu 8:  Tính an toàn (Security) - khả năng bảo vệ thông tin không cho truy cập trái phép, thuộc nhóm tiêu chí nào?, A. Tính hiệu quả.
+B. Tính tin cậy. C. Tính khả chuyển. D. Tính năng (Chức năng).  Đáp án đúng:  D
+Câu 9:  Độ đo MTBF (Mean Time Between Failures) dùng để đánh giá tiêu chí nào của phần mềm?
+A. Tính năng lượng. B. Tính bảo trì. C. Độ tin cậy (Reliability). D. Tính khả chuyển.
+Đáp án đúng:  C
+Câu 10:  Nhược điểm của các dự án phần mềm theo thực trạng (khủng hoảng phần mềm) thường là gì?, A. Tốn quá nhiều thời gian nhưng hoàn thành đúng chức năng.
+B. Bội chi, trễ hạn và không đáp ứng đầy đủ tính năng thiết kế ban đầu.
+C. Lập trình nhanh nhưng thiết kế quá lâu. D. Chỉ bị lỗi khi người dùng yêu cầu thêm tính năng.
+Đáp án đúng:  B
+Câu 11:  Một sản phẩm phần mềm hoàn chỉnh bao gồm các thành phần nào?
+A. Chỉ bao gồm mã nguồn (mã máy). B. Mã nguồn, phần cứng và hệ điều hành.
+C. Chương trình máy tính, cấu trúc dữ liệu và tài liệu (kỹ thuật, hướng dẫn sử dụng).
+D. Cơ sở dữ liệu và giao diện người dùng.  Đáp án đúng:  C
+Câu 12:  Định nghĩa về Kỹ nghệ phần mềm của Bauer (1969) nhấn mạnh điều gì?
+A. Tạo ra phần mềm đắt tiền nhưng chất lượng cao nhất.
+B. Thiết lập và sử dụng các nguyên lý công nghệ đúng đắn để có được phần mềm một cách kinh tế, tin cậy và làm việc hiệu quả.
+C. Viết mã nguồn một cách nhanh nhất có thể.
+D. Áp dụng trí nhân tạo vào thiết kế phần mềm.  Đáp án đúng:  B
+Câu 13:  Trong học tập và giải quyết vấn đề ở kỷ nguyên AI, phương pháp nào được giảng viên khuyến khích?, A. Giao toàn bộ bài tập khó cho AI giải quyết.
+B. Sử dụng AI ngay lập tức khi gặp vấn đề khó để tiết kiệm thời gian.
+C. Luôn đặt câu hỏi WHW (Why - How - What) và không nên sử dụng AI ngay lập tức khi gặp vấn đề khó.
+D. Không cần làm việc nhóm vì AI có thể đóng vai trò đồng đội.  Đáp án đúng:  C
+Câu 14:  Phần mềm được phân loại theo chức năng bao gồm những loại chính nào?
+A. Phần mềm hệ thống, phần mềm nghiệp vụ, phần mềm công cụ (CASE tools).
+B. Phần mềm miễn phí và phần mềm trả phí. C. Phần mềm khoa học và phần mềm giáo dục.
+D. Phần mềm ứng dụng và phần mềm di động.  Đáp án đúng:  A
+Câu 15:  Trình biên dịch (Compilers), Hệ soạn thảo (Editors) và Hệ điều hành (OS) thuộc loại phần mềm nào?
+A. Phần mềm khoa học (Scientific software). B. Phần mềm hệ thống (System software).
+C. Phần mềm nghiệp vụ (Business software). D. Phần mềm ứng dụng (Application software).  Đáp án đúng:  B
+Câu 16:  Theo mô hình chất lượng ISO 9126, khả năng tránh các kết quả sai (Tính hoàn thiện) và khả năng chịu lỗi thuộc về nhóm tiêu chí nào?
+A. Tính khả chuyển. B. Tính khả dụng. C. Tính tin cậy (Reliability). D. Tính năng.
+Đáp án đúng:  C
+Câu 17:  Khả năng phần mềm có thể sử dụng một lượng tài nguyên hợp lý để thực hiện công việc dưới điều kiện cụ thể được gọi là gì?, A. Tính bảo trì.
+B. Tính dễ dùng (Usability). C. Tính hiệu quả (Efficiency). D. Tính năng.  Đáp án đúng:  C
+Câu 18:  "Hệ thống di sản" (Legacy system) được định nghĩa là gì?
+A. Là phiên bản phần mềm mới nhất vừa được phát hành.
+B. Là các phần mềm ứng dụng lỗi thời vẫn đang được sử dụng thay vì dùng phiên bản nâng cấp có sẵn.
+C. Là các hệ thống luôn được phát triển bằng công nghệ tiên tiến nhất.
+D. Là phần mềm chỉ chạy trên máy tính cá nhân.  Đáp án đúng:  B
+Câu 19:  Tính chất nào KHÔNG phải là đặc trưng của phần mềm?, A. Phần mềm là một thực thể vật lý thay vì là một hệ thống logic.
+B. Phần mềm được phát triển hoặc kỹ nghệ hóa chứ không được chế tạo theo kiểu cổ điển.
+C. Phần mềm vô hình và phức tạp. D. Phần mềm không được lắp ráp từ các thành phần có sẵn một cách hoàn toàn.
+Đáp án đúng:  A
+Câu 20:  Theo định nghĩa, phần mềm khác với phần cứng ở điểm mấu chốt nào?, A. Phần cứng có thể cập nhật qua Internet, phần mềm thì không.
+B. Phần mềm là một yếu tố logic, trong khi phần cứng là yếu tố vật lý.
+C. Phần mềm dễ sửa chữa hơn phần cứng. D. Phần cứng thoái hóa do thay đổi yêu cầu, phần mềm hỏng do mòn cũ vật lý.
+Đáp án đúng:  B
+Câu 21:  Tiêu chí "Dễ bảo trì" từ góc nhìn của nhà phát triển phần mềm mang lại lợi ích gì?, A. Giúp người dùng cuối thao tác nhanh hơn.
+B. Tiết kiệm phần cứng máy chủ. C. Dễ dàng chẩn đoán nguyên nhân lỗi, dễ thay đổi và kiểm tra sau khi chỉnh sửa.
+D. Làm cho giao diện đẹp mắt hơn.  Đáp án đúng:  C
+Câu 22:  Các giai đoạn chung nhất của mọi vòng đời phát triển phần mềm là gì?
+A. Thu thập, Viết code, Bán hàng. B. Lập kế hoạch, Phân tích và Đặc tả, Phát triển (Thiết kế, Lập trình, Kiểm thử), và Tiến hóa (Bảo trì).
+C. Ký hợp đồng, Lập trình, Nghiệm thu. D. Giao tiếp, Thiết kế, Bàn giao.  Đáp án đúng:  B
+Câu 23:  Sự khác biệt cơ bản giữa "Nhà khoa học phần mềm" và "Kỹ sư phần mềm" là gì?
+A. Kỹ sư có thời gian vô hạn, nhà khoa học bị áp lực dự án.
+B. Kỹ sư phải phát triển giải pháp cho khách hàng cụ thể với thời hạn nghiêm ngặt và môi trường biến động, còn nhà khoa học đề xuất giải pháp/lý thuyết mới.
+C. Kỹ sư chỉ viết code, nhà khoa học chỉ vẽ thiết kế. D. Không có sự khác biệt.
+Đáp án đúng:  B
+Câu 24:  Trong những năm cuối thập niên 80 (nửa sau 80s), SE chứng kiến sự phát triển mạnh mẽ của công nghệ nào?
+A. Lập trình top-down. B. Sơ đồ khối. C. Công nghệ hướng đối tượng, UML, và quy trình RUP.
+D. Lập trình cấu trúc.  Đáp án đúng:  C
+Câu 25:  Thống kê của Standish Group (2006) chỉ ra rằng có tới bao nhiêu phần trăm dự án phần mềm thất bại trước khi hoàn thành?, A. 16.2% B. 31.1% C. 52.7% D. 83.8%  Đáp án đúng:  B
+Câu 26:  Khó khăn nào sau đây KHÔNG phải là nguyên nhân gây ra khủng hoảng phần mềm?, A. Tài liệu đặc tả cố định trong thời gian dài, khó đáp ứng thay đổi của người dùng.
+B. Coi trọng lập trình hơn khâu thiết kế. C. Việc sử dụng lại phần mềm (software reuse) được coi trọng quá mức.
+D. Không có phương pháp mô tả rõ ràng yêu cầu của khách hàng.  Đáp án đúng:  C
+Câu 27:  Hình ảnh "Tảng băng chìm" trong chi phí phần mềm ám chỉ điều gì?
+A. Chi phí mua phần cứng luôn đắt hơn phần mềm.
+B. Chi phí lập trình lớn hơn chi phí thiết kế.
+C. Chi phí phát triển chỉ là phần nổi, chi phí bảo trì mới là phần chìm khổng lồ.
+D. Chi phí quảng cáo phần mềm rất cao.  Đáp án đúng:  C
+Câu 28:  Trong nội bộ giai đoạn Phát triển phần mềm, thông thường chi phí (hoặc thời gian) phân bổ ra sao?
+A. 1/3 Lập kế hoạch, 1/6 Lập trình, 1/2 Kiểm thử.
+B. 1/2 Lập trình, 1/4 Thiết kế, 1/4 Kiểm thử. C. 90% Lập trình, 10% Kiểm thử.
+D. Lập trình chiếm toàn bộ chi phí.  Đáp án đúng:  A
+Câu 29:  Một quy trình (Thủ tục - Procedures) trong SE dùng để làm gì?
+A. Tạo ra cơ sở dữ liệu. B. Xác định trình tự công việc, tài liệu bàn giao, mốc thời gian và cách thức thực hiện.
+C. Thay thế cho các ngôn ngữ lập trình. D. Tự động hóa quá trình kiểm thử phần mềm.
+Đáp án đúng:  B
+Câu 30:  "Tính khả chuyển" (Portability) của một phần mềm được hiểu là:, A. Khả năng bảo vệ dữ liệu trên mạng.
+B. Tốc độ chuyển file giữa hai máy tính. C. Khả năng thích nghi, tương hợp và dễ cài đặt sang nhiều môi trường (hệ điều hành, phần cứng) khác nhau.
+D. Khả năng dịch mã nguồn sang ngôn ngữ máy.  Đáp án đúng:  C
+Câu 31:  Điều nào sau đây là đặc điểm của "Yêu cầu chức năng"?
+A. Xác định phần mềm phải hoạt động nhanh cỡ nào.
+B. Xác định ngôn ngữ lập trình được sử dụng.
+C. Xác định những gì phần mềm sẽ làm và những gì nó không làm (hành vi, dịch vụ).
+D. Xác định kinh phí của dự án.  Đáp án đúng:  C
+Câu 32:  Đặc điểm của "Phần mềm theo đơn đặt hàng" (Custom software) là gì?
+A. Một công ty phần mềm làm ra để bán cho hàng triệu người.
+B. Một khách hàng làm việc với một công ty phần mềm để tạo ra một sản phẩm duy nhất thỏa mãn yêu cầu cụ thể.
+C. Các phần mềm mã nguồn mở tải trên mạng. D. Hệ điều hành Windows hay Microsoft Office.
+Đáp án đúng:  B
+Câu 33:  Theo biểu đồ "Failure rate" (tỷ lệ lỗi) của phần mềm, tại sao đường cong thực tế lại có những điểm "tăng vọt" (spike)?
+A. Do phần cứng bị cũ đi. B. Do lỗi phát sinh hoặc tác dụng phụ mỗi khi phần mềm được nâng cấp, thay đổi.
+C. Do người dùng quên cách sử dụng. D. Do chu kỳ hoạt động của hệ điều hành.
+Đáp án đúng:  B
+Câu 34:  Sự thoái hóa của phần mềm (Software deterioration) chủ yếu bắt nguồn từ nguyên nhân nào?
+A. Sự mài mòn của đĩa cứng lưu trữ. B. Quá trình thu thập yêu cầu có vấn đề, nghiệp vụ thường xuyên thay đổi và sự tiến hóa của môi trường vận hành.
+C. Do ngôn ngữ lập trình bị lỗi thời. D. Do nhà phát triển cố tình làm giảm chất lượng.
+Đáp án đúng:  B
+Câu 35:  Tại sao nói phần mềm là "vô hình" (Invisible)? A. Vì nó được làm bằng điện.
+B. Vì người ta không thể chạm, cầm, hay quan sát cấu trúc vật lý của nó như một cỗ máy phần cứng.
+C. Vì nó chạy quá nhanh. D. Vì nó bị mã hóa và che giấu.  Đáp án đúng:  B
+Câu 36:  Yếu tố "Con người" trong Công nghệ phần mềm đóng vai trò gì?
+A. Chỉ là người sử dụng cuối (End User). B. Là thành phần thiết lập cầu nối thông qua các công cụ, thủ tục để tạo ra phần mềm.
+C. Chỉ là người cấp vốn (Sponsor). D. Không đóng vai trò quan trọng trong việc thiết kế.
+Đáp án đúng:  B
+Câu 37:  Theo bài giảng, câu hỏi WHW (Why - How - What) ứng dụng vào SE giúp sinh viên điều gì?, A. Biết cách viết code nhanh nhất.
+B. Tư duy giải quyết vấn đề, hiểu rõ mục đích (Why), quy trình thực hiện (How) và kết quả cần đạt (What).
+C. Để tranh luận với khách hàng. D. Để copy mã nguồn từ người khác.  Đáp án đúng:  B
+Câu 38:  Khi phát triển phần mềm quy mô lớn, việc không chứng minh được tính đúng đắn một cách định lượng sẽ gây ra hậu quả gì?
+A. Giao diện trở nên xấu xí. B. Không thể đánh giá được độ tin cậy và sự đúng đắn của hệ thống.
+C. Phần cứng bị hỏng. D. Phần mềm sẽ không thể biên dịch.  Đáp án đúng:  B
+Câu 39:  Đạo đức nghề nghiệp trong SE yêu cầu kỹ sư phần mềm phải tuân thủ điều gì?
+A. Làm phần mềm bằng mọi giá dù phải vi phạm bản quyền.
+B. Tính chuyên nghiệp, quy tắc đạo đức ứng xử nghề nghiệp và các vấn đề luật pháp.
+C. Tối đa hóa lợi nhuận cá nhân bằng cách giấu lỗi phần mềm.
+D. Chỉ bảo mật thông tin nếu khách hàng trả thêm tiền.  Đáp án đúng:  B
+Câu 40:  Việc chỉ kiểm thử ở giai đoạn cuối (mà không đảm bảo chất lượng từng giai đoạn) sẽ dẫn đến điều gì?
+A. Tiết kiệm được nhiều chi phí dự án. B. Bàn giao sản phẩm trễ hạn do phát hiện ra quá nhiều lỗi dồn cục.
+C. Tăng tốc độ viết code. D. Người dùng có sản phẩm sớm hơn.  Đáp án đúng:  B
+Câu 41:  Thuộc tính "Tính ổn định" (Stability) trong nhóm Khả năng bảo trì có nghĩa là: A. Chương trình không bao giờ bị tắt.
+B. Khả năng tránh những tác động không mong muốn (lỗi phát sinh) khi tiến hành chỉnh sửa hệ thống.
+C. Phần mềm chạy trên nhiều loại chip khác nhau. D. Dữ liệu luôn được nén lại.
+Đáp án đúng:  B
+Câu 42:  "Phần mềm hệ thống" (System software) khác "Phần mềm nghiệp vụ" (Business software) ở điểm nào?
+A. Phần mềm hệ thống điều hành máy tính/thiết bị (như OS), còn phần mềm nghiệp vụ trợ giúp hoạt động kinh doanh của tổ chức.
+B. Phần mềm hệ thống dùng cho bán lẻ, phần mềm nghiệp vụ dùng cho máy in. C. Phần mềm hệ thống là phần cứng, phần mềm nghiệp vụ là mã nguồn.
+D. Cả hai là một.  Đáp án đúng:  A
+Câu 43:  Kỹ năng nào dưới đây là bắt buộc sinh viên phải rèn luyện khi học SE?
+A. Kỹ năng làm việc độc lập hoàn toàn. B. Rèn luyện phương pháp làm việc nhóm hiệu quả (Teamwork).
+C. Sử dụng thành thạo mọi ngôn ngữ lập trình hiện có.
+D. Khả năng thiết kế phần cứng máy tính.  Đáp án đúng:  B
+Câu 44:  Sự gia tăng kích thước của ứng dụng (KLOC hoặc Function points) dẫn đến điều gì?
+A. Tăng tỷ lệ thành công của dự án. B. Tăng rủi ro dẫn đến sự hủy bỏ hoặc đình trệ dự án phần mềm.
+C. Thời gian lập trình giảm xuống. D. Giảm nhu cầu sử dụng công cụ CASE.
+Đáp án đúng:  B
+Câu 45:  Phạm vi phần mềm (Software scope) xác định những thông tin gì?
+A. Ngôn ngữ lập trình được sử dụng. B. Xác định những gì sản phẩm sẽ làm và không làm, sản phẩm chứa gì và không chứa gì.
+C. Số lượng nhân viên cần tuyển. D. Thuật toán để tối ưu cơ sở dữ liệu.
+Đáp án đúng:  B
+Câu 46:  Hoạt động nào KHÔNG nằm trong "Phương pháp" (Methods) của quy trình Kỹ nghệ phần mềm?
+A. Lập trình cấu trúc hoặc hướng đối tượng. B. Phân tích (nắm bắt và đặc tả yêu cầu).
+C. Lắp ráp các linh kiện máy tính. D. Quản lý dự án (PERT, COCOMO).  Đáp án đúng:  C
+Câu 47:  Việc thiết kế "Sản phẩm phần mềm" (Software Product) cần quan tâm đến lưu trữ ở bộ nhớ nào?
+A. Chỉ quan tâm bộ nhớ cache. B. Cấu trúc dữ liệu làm việc ở bộ nhớ trong và lưu trữ ở bộ nhớ ngoài.
+C. Chỉ lưu trữ trên Cloud. D. Lưu trữ hoàn toàn trên thanh ghi CPU.  Đáp án đúng:  B
+Câu 48:  Tiêu chí "Sử dụng tài nguyên" (Resource utilization) của phần mềm xem xét khía cạnh nào?
+A. Lượng RAM, CPU, hoặc không gian đĩa cứng mà phần mềm sử dụng.
+B. Số lượng lập trình viên tham gia. C. Số tiền công ty trả cho khách hàng.
+D. Số lượng tài liệu giấy in ra.  Đáp án đúng:  B
+Câu 49:  Theo định nghĩa, Phần mềm là _____ chứ không phải là _____?
+A. Yếu tố vật lý / Yếu tố logic. B. Yếu tố logic / Yếu tố vật lý.
+C. Khái niệm khoa học / Công cụ thực tế. D. Tập hợp dữ liệu rời rạc / Mã nguồn.
+Đáp án đúng:  B
+Câu 50:  Khái niệm "Chương trình máy tính" (Computer Program) được hiểu là: A. Một hệ điều hành.
+B. Một đoạn mã lập trình thực hiện một nhiệm vụ được định nghĩa rõ ràng.
+C. Toàn bộ chu trình dự án. D. Bản đặc tả yêu cầu.  Đáp án đúng:  B
+NGÂN HÀNG TRẮC NGHIỆM: QUY TRÌNH PHẦN MỀM (50 CÂU)
+Câu 1:  Bốn hoạt động chung nhất của mọi tiến trình phần mềm là gì?
+A. Phân tích, Thiết kế, Viết mã, Kiểm thử. B. Đặc tả yêu cầu, Thiết kế & Cài đặt, Thẩm định, và Tiến hóa.
+C. Lập kế hoạch, Cài đặt, Bảo trì, Xóa bỏ. D. Thu thập, Code, Chạy thử, Sửa lỗi.
+Đáp án đúng:  B
+Câu 2:  Nhược điểm lớn nhất của mô hình thác nước (Waterfall) là gì?
+A. Không có tài liệu kỹ thuật đi kèm. B. Thiếu các bước kiểm thử phần mềm.
+C. Khó đáp ứng khi khách hàng thay đổi yêu cầu do phân tách cứng nhắc các giai đoạn.
+D. Không thể áp dụng cho các hệ thống lớn.  Đáp án đúng:  C
+Câu 3:  Quy trình RUP (Rational Unified Process) bao gồm 4 pha chính nào?
+A. Khởi tạo, Phân tích, Thiết kế, Chuyển giao. B. Inception, Elaboration, Construction, Transition. C. Communication, Planning, Modeling, Deployment.
+D. Requirements, Design, Implementation, Maintenance.  Đáp án đúng:  B
+Câu 4:  Đặc trưng của mô hình phát triển xoắn ốc (Spiral model) là gì?
+A. Khách hàng không cần tham gia vào quá trình phát triển.
+B. Phù hợp nhất với các dự án siêu nhỏ.
+C. Kết hợp đánh giá và phân tích rủi ro ở mỗi vòng lặp.
+D. Chạy một lần duy nhất từ đầu đến cuối như thác nước.  Đáp án đúng:  C
+Câu 5:  Trong Agile, phương pháp Extreme Programming (XP) đặc biệt nhấn mạnh kỹ thuật nào?
+A. Lập trình đôi (Pair programming). B. Lập trình cá nhân độc lập tuyệt đối.
+C. Thiết kế tài liệu chi tiết trước khi code. D. Bỏ qua hoàn toàn việc kiểm thử đơn vị.
+Đáp án đúng:  A
+Câu 6:  Khung thời gian làm việc ngắn (thường từ 1 đến 4 tuần) trong quy trình Scrum được gọi là gì?
+A. Phase. B. Milestone. C. Sprint. D. Iteration block.  Đáp án đúng:  C
+Câu 7:  Tuyên ngôn Agile (Agile Manifesto) đề cao yếu tố nào hơn "quy trình và công cụ" (processes and tools)?
+A. Hợp đồng đàm phán. B. Tài liệu toàn diện. C. Bám sát kế hoạch.
+D. Cá nhân và sự tương tác (Individuals and interactions).  Đáp án đúng:  D
+Câu 8:  Trong Scrum, danh sách chứa tất cả các yêu cầu cần phát triển cho sản phẩm được gọi là gì?
+A. Sprint Backlog. B. Product Backlog. C. Project Charter. D. Requirement Traceability Matrix.  Đáp án đúng:  B
+Câu 9:  Mục tiêu chính của pha Elaboration trong quy trình RUP là gì?
+A. Định nghĩa phạm vi dự án. B. Lập kế hoạch, đặc tả các đặc tính và thiết lập kiến trúc cơ bản.
+C. Lập trình toàn bộ sản phẩm. D. Đào tạo người dùng cuối.  Đáp án đúng:  B
+Câu 10:  Kỹ thuật "Incremental delivery" (Chuyển giao tăng dần) giúp giải quyết vấn đề gì tốt nhất?
+A. Tránh phải viết tài liệu. B. Tiết kiệm phần cứng.
+C. Chấp nhận sự thay đổi yêu cầu và cho người dùng có sản phẩm dùng sớm.
+D. Giảm số lượng lập trình viên.  Đáp án đúng:  C
+Câu 11:  Trong Kỹ nghệ phần mềm, thuật ngữ RAD là viết tắt của từ gì?
+A. Rapid Application Design. B. Relative Application Development. C. Rapid Application Development. D. Recent Application Development.
+Đáp án đúng:  C
+Câu 12:  Tên gọi khác của Mô hình tuần tự tuyến tính (Linear Sequential model) là gì?
+A. Classical life cycle model (Chu kỳ sống cổ điển) / Waterfall model. B. Fountain model. C. Spiral model.
+D. Component-based model.  Đáp án đúng:  A
+Câu 13:  Mô hình làm Bản mẫu (Prototyping model) đặc biệt phù hợp trong trường hợp nào?
+A. Khi các yêu cầu đã được xác định rất rõ ràng.
+B. Khi khách hàng KHÔNG thể định nghĩa các yêu cầu một cách rõ ràng.
+C. Cho các dự án có đội ngũ phát triển rất lớn.
+D. Khi dự án có ngân sách vô hạn.  Đáp án đúng:  B
+Câu 14:  Giai đoạn nào sau đây KHÔNG thuộc Vòng đời phát triển hệ thống (SDLC - System Development Life Cycle) thông thường?
+A. Cài đặt mã (Coding). B. Kiểm thử (Testing). C. Bảo trì (Maintenance). D. Trừu tượng hóa (Abstraction).
+Đáp án đúng:  D
+Câu 15:  5 hoạt động khung (framework activities) chung nhất của Kỹ nghệ phần mềm là gì?
+A. Giao tiếp, Lập kế hoạch, Mô hình hóa, Xây dựng, Triển khai (communication, planning, modeling, construction, deployment).
+B. Giao tiếp, Quản lý rủi ro, Đo lường, Sản xuất, Đánh giá.
+C. Phân tích, Thiết kế, Lập trình, Gỡ lỗi, Bảo trì.
+D. Phân tích, Lập kế hoạch, Thiết kế, Lập trình, Kiểm thử.  Đáp án đúng:  A
+Câu 16:  Ưu điểm chính của Mô hình tăng dần (Incremental model) là gì?
+A. Là phương pháp tốt nhất khi yêu cầu đã hoàn toàn cố định.
+B. Rất tốt khi cần một sản phẩm cốt lõi hoạt động được một cách nhanh chóng.
+C. Phù hợp nhất cho đội ngũ phát triển khổng lồ.
+D. Loại bỏ hoàn toàn nhu cầu phải bảo trì.  Đáp án đúng:  B
+Câu 17:  Pha nào dưới đây KHÔNG thuộc quy trình Unified Process (RUP)? A. Inception phase. B. Elaboration phase.
+C. Construction phase. D. Validation phase.  Đáp án đúng:  D
+Câu 18:  Khái niệm "Lặp tiến trình" (Process iteration) được định nghĩa như thế nào?
+A. Xóa bỏ mã nguồn và viết lại từ đầu.
+B. Lặp lại một tiến trình để đạt tới mục tiêu mong đợi, kết quả của lần lặp trước là điểm bắt đầu của lần lặp tiếp theo.
+C. Chạy vòng lặp (for/while) trong lúc lập trình. D. Khách hàng lặp lại yêu cầu nhiều lần.
+Đáp án đúng:  B
+Câu 19:  Mô hình tiến trình nào có các hoạt động Đặc tả, Phát triển và Kiểm định được thực hiện xen kẽ nhau?
+A. Mô hình thác nước (Waterfall). B. Mô hình tiến hóa (Evolutionary development). C. Mô hình chữ V (V-model).
+D. Mô hình thành phần (Component-based).  Đáp án đúng:  B
+Câu 20:  Kỹ nghệ phần mềm dựa trên thành phần (Component-based SE) có đặc điểm cốt lõi là gì?
+A. Viết mọi dòng code từ con số không. B. Dựa trên việc sử dụng lại một cách có hệ thống, hệ thống được kết hợp từ các thành phần có sẵn.
+C. Chỉ áp dụng cho phần cứng máy tính. D. Không hỗ trợ việc sửa đổi yêu cầu.
+Đáp án đúng:  B
+Câu 21:  Trong RUP, hoạt động "Business Modeling" (Mô hình hóa nghiệp vụ) thường sử dụng ký pháp nào?
+A. ERM. B. DFD. C. BPMN (Business Process Modeling Notation). D. OOP.  Đáp án đúng:  C
+Câu 22:  Theo RUP, "Pha" (Phases) và "Bước/Nghiệp vụ" (Disciplines) có mối quan hệ như thế nào trong một lần lặp (Iteration)?
+A. Mỗi lần lặp chỉ thực hiện duy nhất một nghiệp vụ.
+B. Trong một lần lặp, bạn sẽ đi xuyên qua (walk through) tất cả các nghiệp vụ (Disciplines).
+C. Nghiệp vụ nằm ngoài các pha phát triển. D. Nghiệp vụ chỉ được thực hiện ở pha cuối cùng.
+Đáp án đúng:  B
+Câu 23:  Tuyên ngôn Agile ưu tiên yếu tố nào hơn "Tài liệu toàn diện" (comprehensive documentation)?
+A. Phần mềm chạy được (Working software). B. Hợp đồng pháp lý chặt chẽ. C. Quy trình và công cụ.
+D. Kế hoạch dài hạn.  Đáp án đúng:  A
+Câu 24:  Cuộc họp Daily Standup (Họp hàng ngày) trong Scrum nhằm mục đích chính là gì?
+A. Báo cáo tài chính cho giám đốc. B. Lên kế hoạch cho cả dự án 1 năm.
+C. Nắm tiến độ công việc và phát hiện các trở ngại (nếu có).
+D. Sa thải nhân viên làm việc kém.  Đáp án đúng:  C
+Câu 25:  Kịch bản người dùng trong XP (User stories) thường được viết theo định dạng mẫu nào?
+A. Cú pháp code Java. B. DFD logic. C. "As a <role>, I want <goal/desire> so that <benefit>".
+D. Ngôn ngữ máy.  Đáp án đúng:  C
+Câu 26:  Khó khăn lớn nhất khi chuyển đổi áp dụng Agile/Scrum là gì?
+A. Phần mềm chạy quá nhanh. B. Khó thay đổi văn hóa làm việc từ quy trình truyền thống sang Agile, và khó đảm bảo khách hàng tham gia toàn thời gian.
+C. Chi phí mua công cụ lập trình Agile quá đắt.
+D. Không có ngôn ngữ lập trình nào hỗ trợ Agile.  Đáp án đúng:  B
+Câu 27:  Các phương pháp Agile (như Scrum, XP) phù hợp nhất với loại dự án nào?
+A. Các dự án có yêu cầu tuyệt đối cố định, không bao giờ thay đổi.
+B. Các hệ thống phần mềm có yêu cầu về tính an toàn, sinh mạng cực kỳ cao (như hàng không vũ trụ).
+C. Các sản phẩm phần mềm vừa và nhỏ, hoạt động trong môi trường thay đổi nhanh chóng.
+D. Dự án kéo dài hàng chục năm không cần ra mắt bản thử nghiệm.  Đáp án đúng:  C
+Câu 28:  Trong tiến trình chung, hoạt động "Tiến hóa" (Evolution) có nghĩa là gì?
+A. Sửa lỗi, nâng cấp, bổ sung và làm hệ thống thích nghi với môi trường/nghiệp vụ mới.
+B. Xóa bỏ phần mềm cũ để làm cái mới.
+C. Thẩm định xem phần mềm có đúng yêu cầu không. D. Thiết kế lại cơ sở dữ liệu.
+Đáp án đúng:  A
+Câu 29:  Nếu quy trình phần mềm KHÔNG dựa trên các khái niệm khoa học và kỹ thuật, thì hậu quả sẽ là gì?
+A. Mã nguồn sẽ tự động sửa lỗi. B. Sẽ dễ dàng tạo lại phần mềm mới hơn là mở rộng (scale) một hệ thống hiện có.
+C. Tốc độ làm việc tăng gấp đôi. D. Tự động hóa hoàn toàn.  Đáp án đúng:  B
+Câu 30:  "Kế hoạch động, thích ứng liên tục" và "Cập nhật tức thì (Just-in-time)" là mô tả của phương pháp nào?
+A. Waterfall. B. V-Model. C. Agile / Scrum. D. Mô hình cấu trúc truyền thống.  Đáp án đúng:  C
+Câu 31:  Việc phân rã yêu cầu thành các "nhiệm vụ có thể cài đặt được" (implementable tasks) trong XP dùng để làm gì?
+A. Tạo tài liệu hướng dẫn sử dụng. B. Làm cơ sở để ước lượng thời gian và lập lịch.
+C. Để nộp cho cơ quan thuế. D. Để vẽ UML.  Đáp án đúng:  B
+Câu 32:  Mô hình tiến hóa (Evolutionary software process models) có đặc trưng nào dưới đây?
+A. Có bản chất lặp (iterative). B. Dễ dàng thích ứng với sự thay đổi yêu cầu của sản phẩm.
+C. Thường không tạo ra các hệ thống bị bỏ đi ngay (throwaway systems). D. Tất cả các ý trên.
+Đáp án đúng:  D
+Câu 33:  Trong RUP, hoạt động "Kiểm thử" (Testing) diễn ra khi nào? A. Chỉ ở pha Transition.
+B. Chỉ sau khi đã code xong 100% dự án.
+C. Được thực hiện lặp đi lặp lại cùng với hoạt động cài đặt.
+D. Trước khi bắt đầu viết code.  Đáp án đúng:  C
+Câu 34:  RUP định nghĩa bao nhiêu "Nguyên tắc thực hành" (Best practices)?
+A. 3 B. 4 C. 5 D. 6  Đáp án đúng:  D
+Câu 35:  Nguyên tắc thực hành thứ 3 của RUP khuyên dùng điều gì?
+A. Phát triển phần mềm lặp đi lặp lại. B. Sử dụng kiến trúc dựa trên thành phần (Component-based architecture).
+C. Quản lý yêu cầu bằng giấy. D. Bỏ qua kiểm chứng chất lượng.  Đáp án đúng:  B
+Câu 36:  Trong RUP, pha Inception (Khởi tạo) nếu đánh giá mức độ đóng góp của hệ thống cho nghiệp vụ là "không đáng kể", thì quyết định tiếp theo là gì?
+A. Tiếp tục làm pha Elaboration. B. Bắt đầu code ngay lập tức. C. Dự án sẽ bị hủy bỏ.
+D. Thay đổi ngôn ngữ lập trình.  Đáp án đúng:  C
+Câu 37:  Mục tiêu của một "Sprint" trong Scrum là gì?
+A. Viết xong tài liệu đặc tả 1000 trang. B. Đưa ra được một vài chức năng hoàn chỉnh để chuyển giao (phần mềm chạy tốt ra đời).
+C. Chỉ để sửa lỗi của phiên bản trước. D. Lên kế hoạch cho năm tiếp theo.
+Đáp án đúng:  B
+Câu 38:  Đặc trưng của Tiến trình phát triển nhanh (Rapid development process) là gì?
+A. Không có đặc tả hệ thống chi tiết. B. Các hoạt động đặc tả, thiết kế, cài đặt được thực hiện xen kẽ.
+C. Tài liệu thiết kế được tối giản hoặc phát sinh tự động. D. Tất cả các ý trên.
+Đáp án đúng:  D
+Câu 39:  Đâu KHÔNG phải là một phương pháp nằm dưới "chiếc ô" của Agile? A. Scrum.
+B. eXtreme Programming (XP). C. Crystal. D. Waterfall.  Đáp án đúng:  D
+Câu 40:  "Lập trình đôi" (Pair programming) mang lại lợi ích gì theo thực tế chứng minh?
+A. Năng suất giảm đi một nửa vì 2 người làm 1 việc.
+B. Mọi lập trình viên đều hiểu mọi đoạn mã, chia sẻ tri thức, trong khi hiệu suất làm việc tương đương với làm độc lập.
+C. Làm cho mã nguồn chạy chậm hơn. D. Một người sẽ không cần làm gì cả.
+Đáp án đúng:  B
+Câu 41:  Trong vòng đời XP, sau bước "Đánh giá" (Review/Retrospective) là bước nào tiếp theo? A. Chuyển giao.
+B. Kết thúc dự án hoàn toàn. C. Quay lại bước Lựa chọn yêu cầu cho phiên bản tiếp theo.
+D. Lên kế hoạch kiểm thử.  Đáp án đúng:  C
+Câu 42:  "Nghiên cứu khả thi" (Feasibility Study) bao gồm công việc gì? A. Lập trình giao diện.
+B. Đánh giá sự hiểu biết về giới hạn sản phẩm phần mềm, vấn đề hệ thống hiện tại, và tác động của dự án tới tổ chức.
+C. Chọn màu sắc cho nút bấm. D. Sửa lỗi máy chủ.  Đáp án đúng:  B
+Câu 43:  Kỹ thuật đối phó với sự thay đổi bằng "Bản mẫu" (Throw-away prototype) có mục tiêu cơ bản là gì?
+A. Viết mã hệ thống hoàn chỉnh. B. Để hiểu và xác nhận lại yêu cầu của khách hàng, nhằm tránh sự thay đổi lớn sau này.
+C. Đem bán trực tiếp cho người dùng. D. Giảm dung lượng đĩa cứng.  Đáp án đúng:  B
+Câu 44:  Nhược điểm của kỹ thuật phát triển thăm dò (Exploratory development) là gì?
+A. Hệ thống thường có cấu trúc nghèo nàn và thiếu trực quan.
+B. Quá tốn thời gian lên kế hoạch. C. Bắt buộc phải hiểu hết yêu cầu từ ngày đầu tiên.
+D. Khách hàng không được tham gia.  Đáp án đúng:  A
+Câu 45:  Trong quy trình RUP, môi trường phát triển (Environment) và Quản lý cấu hình (Configuration & Change Mgmt) được coi là gì?
+A. Là các pha (Phases) tĩnh. B. Không tồn tại trong RUP.
+C. Là các bước/nghiệp vụ (Disciplines) hỗ trợ chạy xuyên suốt các vòng lặp.
+D. Chỉ dành cho người dùng cuối.  Đáp án đúng:  C
+Câu 46:  Tuyên ngôn Agile ưu tiên yếu tố nào hơn "Bám sát kế hoạch" (Following a plan)?
+A. Công cụ lập trình. B. Lập trình đôi. C. Phản hồi nhanh với sự thay đổi (Responding to change).
+D. Tạo bản mẫu.  Đáp án đúng:  C
+Câu 47:  Tightly-integrated teams (Đội phát triển cộng tác chặt chẽ) trong Agile tiềm ẩn rủi ro nào?
+A. Dư thừa nhân lực. B. Thiếu sự tương tác.
+C. Nếu một thành viên rời nhóm, có thể gây xáo trộn lớn do tri thức phụ thuộc nhiều vào con người hơn là tài liệu.
+D. Giao tiếp quá nhiều với khách hàng.  Đáp án đúng:  C
+Câu 48:  Kỹ thuật "Tối thiểu hóa tài liệu" và "Mô tả yêu cầu phi hình thức" trong Agile tạo ra thách thức lớn nhất cho giai đoạn nào?
+A. Khởi tạo (Inception). B. Lập trình (Coding). C. Bảo trì phần mềm (Maintenance). D. Trình bày sản phẩm (Demo).
+Đáp án đúng:  C
+Câu 49:  Mô hình tiến trình nào là sự kết hợp của 3 mô hình: thác nước, tiến hóa và dựa trên thành phần?
+A. Scrum. B. V-Model. C. RUP (Rational Unified Process). D. RAD.  Đáp án đúng:  C
+Câu 50:  Trong quy trình RUP, "Mô hình hóa phần mềm trực quan" (Visual software modeling) chủ yếu dựa vào ngôn ngữ nào?
+A. HTML. B. UML (Unified Modeling Language). C. Python. D. C++.  Đáp án đúng:  B
+NGÂN HÀNG TRẮC NGHIỆM: KỸ NGHỆ VÀ QUẢN LÝ YÊU CẦU (50 CÂU)
+Câu 1:  Yêu cầu phần mềm được chia thành hai mức độ chính nào?
+A. Yêu cầu giao diện và Yêu cầu bảo mật.
+B. Yêu cầu người dùng (mức cao) và Yêu cầu hệ thống (đặc tả chi tiết).
+C. Yêu cầu dữ liệu và Yêu cầu tiến trình.
+D. Yêu cầu nhập liệu và Yêu cầu xuất dữ liệu.  Đáp án đúng:  B
+Câu 2:  Việc yêu cầu "Hệ thống chỉ được ngừng phục vụ không quá 5 giây trong một ngày" thuộc loại yêu cầu nào?
+A. Yêu cầu chức năng. B. Yêu cầu phi chức năng. C. Yêu cầu người dùng. D. Yêu cầu miền.
+Đáp án đúng:  B
+Câu 3:  Bốn hoạt động chung nhất của quy trình Kỹ nghệ yêu cầu (Requirements Engineering) gồm: A. Thiết kế, Viết mã, Cài đặt, Bảo trì.
+B. Thu thập (Khám phá), Đặc tả, Thẩm định, Quản lý yêu cầu.
+C. Kế hoạch, Phân tích rủi ro, Mô hình hóa, Nghiệm thu.
+D. Giao tiếp, Lập trình, Chạy thử, Sửa lỗi.  Đáp án đúng:  B
+Câu 4:  Kỹ thuật nào sử dụng việc quan sát trực tiếp các hoạt động nghiệp vụ trong thực tế để khám phá yêu cầu?
+A. Phỏng vấn đóng (Closed interview). B. Kỹ thuật dùng kịch bản (Scenarios). C. Dùng bản mẫu (Prototyping).
+D. Nghiên cứu nhân học (Ethnography).  Đáp án đúng:  D
+Câu 5:  Mục đích của công đoạn "Thẩm định yêu cầu" (Requirements validation) là gì?
+A. Để tìm ra lỗi cú pháp trong mã nguồn.
+B. Đảm bảo các yêu cầu xác định đúng hệ thống mà khách hàng mong đợi.
+C. Để thiết kế cơ sở dữ liệu. D. Để lập lịch cho dự án.  Đáp án đúng:  B
+Câu 6:  Tính "nhất quán" (Consistency) của bộ đặc tả yêu cầu mang ý nghĩa gì?
+A. Tất cả các tính năng khách hàng yêu cầu đều được ghi nhận đầy đủ.
+B. Các yêu cầu có thể được kiểm thử dễ dàng.
+C. Các mô tả về tính năng và dịch vụ không chứa các xung đột hoặc mâu thuẫn lẫn nhau.
+D. Yêu cầu phù hợp với ngân sách dự án.  Đáp án đúng:  C
+Câu 7:  Hoạt động Quản lý yêu cầu (Requirements management) giải quyết vấn đề cốt lõi nào?
+A. Phân chia công việc cho các lập trình viên. B. Viết tài liệu hướng dẫn sử dụng phần mềm.
+C. Quản lý sự thay đổi của các yêu cầu trong suốt quá trình phát triển và vận hành hệ thống.
+D. Tối ưu hóa thuật toán của hệ thống.  Đáp án đúng:  C
+Câu 8:  Trong quá trình thu thập yêu cầu, kỹ thuật "kịch bản" (scenario) thường cung cấp thông tin gì?
+A. Sơ đồ thực thể liên kết của cơ sở dữ liệu.
+B. Trạng thái bắt đầu, dòng sự kiện thông thường, sự kiện bất thường và trạng thái kết thúc.
+C. Mã giả (pseudocode) của hệ thống. D. Thiết kế giao diện chi tiết màn hình.
+Đáp án đúng:  B
+Câu 9:  Yêu cầu miền (Domain requirements) là gì? A. Ràng buộc về ngân sách dự án.
+B. Các ràng buộc hệ thống xuất phát từ đặc thù của miền hoạt động (ví dụ: luật y tế, quy tắc vật lý, nghiệp vụ đặc thù).
+C. Các chỉ tiêu về thời gian tải trang web.
+D. Yêu cầu về cấu hình mạng và tên miền (domain name).  Đáp án đúng:  B
+Câu 10:  Nhược điểm của việc sử dụng hoàn toàn ngôn ngữ tự nhiên tự do để đặc tả yêu cầu là gì?
+A. Rất khó để người dùng cuối đọc hiểu. B. Quá phụ thuộc vào các công cụ toán học.
+C. Dễ gây nhập nhằng, khó tách biệt rõ ràng yêu cầu chức năng và phi chức năng.
+D. Không có thể lưu trữ thành file tài liệu.  Đáp án đúng:  C
+Câu 11:  Kỹ nghệ yêu cầu (Requirements Engineering) được định nghĩa là gì?
+A. Là quy trình viết code nhanh nhất theo yêu cầu khách hàng.
+B. Là quy trình xác định các dịch vụ hệ thống mà khách hàng yêu cầu, cùng với các ràng buộc để phát triển và vận hành các dịch vụ đó.
+C. Là quy trình thiết kế cơ sở dữ liệu cho phần mềm.
+D. Là việc kiểm thử phần mềm sau khi đã hoàn thành mã nguồn.  Đáp án đúng:  B
+Câu 12:  Mục đích chính yếu của bộ Yêu cầu (Requirements) đối với các dự án làm theo đơn đặt hàng là gì?
+A. Để lập trình viên có thể copy code. B. Làm cơ sở cho việc đề xuất/đấu thầu và lập hợp đồng (mức đặc tả chi tiết).
+C. Để sinh ra giao diện tự động. D. Để thay thế hoàn toàn tài liệu thiết kế kiến trúc.
+Đáp án đúng:  B
+Câu 13:  Yêu cầu chức năng (Functional Requirements) thường mô tả điều gì?
+A. Ràng buộc về bộ nhớ và tốc độ xử lý.
+B. Các dịch vụ mà hệ thống phải cung cấp, cách hệ thống phản ứng với đầu vào và hành vi trong các tình huống cụ thể.
+C. Ngôn ngữ lập trình bắt buộc phải sử dụng. D. Tiêu chuẩn thiết kế phần cứng.
+Đáp án đúng:  B
+Câu 14:  Sự khác biệt chính giữa Yêu cầu người dùng (User Requirements) và Yêu cầu hệ thống (System Requirements) là gì?
+A. Yêu cầu người dùng viết bằng code, yêu cầu hệ thống viết bằng tiếng Anh.
+B. Yêu cầu người dùng nhắm vào đối tượng quản lý/khách hàng (ngôn ngữ tự nhiên), còn yêu cầu hệ thống đặc tả chi tiết dùng cho kỹ sư/nhà phát triển.
+C. Yêu cầu người dùng quan trọng hơn yêu cầu hệ thống. D. Không có sự khác biệt nào.
+Đáp án đúng:  B
+Câu 15:  Yêu cầu:  "Hệ thống phải được viết bằng ngôn ngữ Java và chạy trên Linux"  thuộc loại yêu cầu nào?
+A. Yêu cầu chức năng. B. Yêu cầu phi chức năng (Ràng buộc về quy trình/môi trường phát triển).
+C. Yêu cầu miền. D. Yêu cầu giao diện.  Đáp án đúng:  B
+Câu 16:  Theo cây phân loại yêu cầu phi chức năng, yêu cầu về "Đạo đức" (Ethical) và "Pháp lý" (Legislative) thuộc nhóm nào?
+A. Product requirements (Yêu cầu sản phẩm). B. Organizational requirements (Yêu cầu tổ chức).
+C. External requirements (Yêu cầu bên ngoài). D. Usability requirements (Yêu cầu tính khả dụng).  Đáp án đúng:  C
+Câu 17:  Điều gì có thể xảy ra nếu các yêu cầu "Phi chức năng" không được đáp ứng?
+A. Hệ thống chỉ chạy chậm đi một chút. B. Hệ thống có thể trở nên vô dụng hoàn toàn (ví dụ: không đạt chuẩn bảo mật, thời gian phản hồi quá trễ).
+C. Giao diện người dùng sẽ kém hấp dẫn hơn.
+D. Lập trình viên sẽ phải viết nhiều tài liệu hơn.  Đáp án đúng:  B
+Câu 18:  Tính "Đầy đủ" (Completeness) trong đặc tả yêu cầu có nghĩa là: A. Hệ thống không chứa các xung đột nội bộ.
+B. Các yêu cầu có thể kiểm chứng được bằng test case.
+C. Bao gồm sự mô tả đầy đủ tất cả các tính năng và dịch vụ mà khách hàng đã yêu cầu.
+D. Tài liệu yêu cầu phải dài ít nhất 100 trang.  Đáp án đúng:  C
+Câu 19:  Yêu cầu:  "Người dùng có thể sử dụng được tất cả chức năng hệ thống sau 4 giờ đào tạo"  là cách để đảm bảo tiêu chí gì của yêu cầu phi chức năng?
+A. Tính nhập nhằng. B. Tính hướng đối tượng. C. Tính đo được / lượng hóa được (Measurable).
+D. Tính bắc cầu.  Đáp án đúng:  C
+Câu 20:  Nếu một yêu cầu được phát biểu trong SRS có duy nhất một cách hiểu, thì yêu cầu đó được coi là đạt tiêu chí nào?
+A. Verifiable (Có thể kiểm chứng). B. Unambiguous (Không nhập nhằng / Rõ ràng). C. Consistent (Nhất quán).
+D. Traceable (Có thể lần vết).  Đáp án đúng:  B
+Câu 21:  Tài liệu yêu cầu phần mềm (Software Requirements Document) KHÔNG dùng để làm gì?
+A. Dùng làm cơ sở lập hợp đồng dự án.
+B. Dùng làm hướng dẫn thiết kế kiến trúc phần mềm.
+C. Mô tả chi tiết cách thức lập trình (thuật toán, cấu trúc dữ liệu) bên trong mã nguồn.
+D. Dùng để làm tài liệu cho người dùng cuối và quản lý khách hàng.  Đáp án đúng:  C
+Câu 22:  Các "bên liên quan" (Stakeholders) trong quá trình thu thập yêu cầu bao gồm những ai?
+A. Chỉ gồm giám đốc công ty khách hàng. B. Chỉ gồm lập trình viên và người kiểm thử.
+C. Bất kỳ ai có ảnh hưởng hoặc bị ảnh hưởng bởi hệ thống (người dùng cuối, quản lý, kỹ sư bảo trì, chuyên gia miền,...).
+D. Chỉ bao gồm người trả tiền mua phần mềm.  Đáp án đúng:  C
+Câu 23:  Khó khăn cốt lõi nhất thường gặp phải trong quá trình phân tích yêu cầu với Stakeholders là gì?
+A. Máy tính chạy quá chậm. B. Khách hàng/Các bên liên quan không thực sự biết rõ họ muốn gì.
+C. Lập trình viên không biết gõ phím nhanh. D. Công cụ vẽ biểu đồ bị lỗi.
+Đáp án đúng:  B
+Câu 24:  Hoạt động nào dưới đây KHÔNG nằm trong các bước của Thu thập và phân tích yêu cầu?
+A. Khám phá yêu cầu. B. Phân loại và tổ chức yêu cầu.
+C. Thương lượng và gán độ ưu tiên. D. Lập trình giao diện (UI Coding).  Đáp án đúng:  D
+Câu 25:  Mục đích của công đoạn "Thương lượng và gán độ ưu tiên" (Negotiation and Prioritization) là gì?
+A. Để tìm ra lỗi của trình biên dịch. B. Xếp hạng yêu cầu và giải quyết các xung đột khi các bên liên quan đưa ra các yêu cầu mâu thuẫn nhau.
+C. Trả giá tiền bản quyền phần mềm. D. Lựa chọn ngôn ngữ lập trình rẻ nhất.
+Đáp án đúng:  B
+Câu 26:  Trong kỹ thuật Phỏng vấn thu thập yêu cầu, đặc điểm của "Phỏng vấn mở" (Open interview) là gì?
+A. Người phỏng vấn chỉ hỏi các câu có câu trả lời Có/Không.
+B. Không có kịch bản hoặc bộ câu hỏi định sẵn khắt khe, chủ yếu để khám phá các vấn đề chung.
+C. Người được phỏng vấn phải điền vào phiếu khảo sát online.
+D. Không cần sự tham gia của con người.  Đáp án đúng:  B
+Câu 27:  Một hạn chế thường gặp của phương pháp Phỏng vấn là gì?
+A. Quá đắt tiền để mua công cụ phỏng vấn.
+B. Chuyên gia miền thường bỏ qua các kiến thức cơ bản do họ thấy nó quá hiển nhiên, hoặc dùng nhiều thuật ngữ chuyên môn khó hiểu.
+C. Không thể ghi âm lại được. D. Không thể áp dụng cho các hệ thống có quy mô nhỏ.
+Đáp án đúng:  B
+Câu 28:  Kỹ thuật "Nghiên cứu nhân học" (Ethnography) đặc biệt hữu ích trong việc gì?
+A. Thiết kế giao diện đồ họa. B. Hiểu được hệ thống hiện tại (system-as-is) và cách con người thực sự làm việc trong thực tế (thay vì làm theo quy trình lý thuyết).
+C. Tạo ra mã nguồn tự động. D. Dự đoán tương lai của công nghệ.  Đáp án đúng:  B
+Câu 29:  Yếu tố nào sau đây được kiểm tra trong tiêu chí "Tính hiện thực" (Realism) khi thẩm định yêu cầu?
+A. Yêu cầu có đúng chính tả ngữ pháp không.
+B. Yêu cầu có thể được cài đặt trong giới hạn về ngân sách và công nghệ kỹ thuật hiện tại không.
+C. Yêu cầu có xung đột với yêu cầu khác không. D. Yêu cầu có đầy đủ chưa.
+Đáp án đúng:  B
+Câu 30:  Tiêu chí "Kiểm chứng được" (Verifiability) trong thẩm định yêu cầu yêu cầu điều gì?
+A. Có thể tạo ra các bài kiểm tra (test/check) để xác nhận hệ thống có thỏa mãn yêu cầu đó hay không.
+B. Phải được phê duyệt bởi cơ quan nhà nước. C. Yêu cầu phải được viết bằng toán học.
+D. Mã nguồn phải không có bug.  Đáp án đúng:  A
+Câu 31:  Tài liệu được tạo ra sau quá trình kỹ nghệ yêu cầu, là công cụ then chốt cho đội thiết kế, phát triển và kiểm thử, được gọi là gì?
+A. Bản nháp mã nguồn (Draft code). B. Tài liệu đặc tả yêu cầu phần mềm (SRS - Software Requirement Specification).
+C. Báo cáo nghiên cứu khả thi (Feasibility study). D. Sách hướng dẫn người dùng.  Đáp án đúng:  B
+Câu 32:  Kỹ thuật nào sử dụng mô hình thực thi được của hệ thống (chạy thử được) để giúp khách hàng đánh giá và xác nhận yêu cầu?
+A. Kiểm định thủ công (Reviews). B. Làm bản mẫu (Prototyping). C. Sinh ca kiểm thử (Test-case generation).
+D. Viết kịch bản (Scenario).  Đáp án đúng:  B
+Câu 33:  Lý do chính khiến chi phí bảo trì thường cao trong phần mềm là do Yêu cầu có đặc tính gì?
+A. Yêu cầu luôn ngắn gọn. B. Yêu cầu thường xuyên tiến hóa/thay đổi do môi trường nghiệp vụ và kỹ thuật thay đổi.
+C. Yêu cầu luôn ổn định 100%. D. Yêu cầu được viết bằng ngôn ngữ phức tạp.
+Đáp án đúng:  B
+Câu 34:  Sự thay đổi yêu cầu xuất phát từ cả hai phía (khách hàng và môi trường) thường dẫn đến quy trình nào?
+A. Quy trình Lập trình đôi. B. Quy trình Quản lý thay đổi (Change management).
+C. Quy trình Xóa bỏ phần mềm. D. Quy trình Thiết kế dữ liệu.  Đáp án đúng:  B
+Câu 35:  Trong Quản lý thay đổi yêu cầu, bước đầu tiên khi có một đề xuất thay đổi mới là gì?
+A. Cập nhật mã nguồn ngay lập tức. B. Phân tích vấn đề và đặc tả lại sự thay đổi (Problem analysis and change specification).
+C. Từ chối yêu cầu để bảo vệ tiến độ. D. Xóa yêu cầu cũ.  Đáp án đúng:  B
+Câu 36:  Để "cục bộ hóa sự thay đổi" (tính thích ứng được của yêu cầu), đặc tả yêu cầu nên tránh điều gì?
+A. Tránh sử dụng biểu đồ. B. Tránh việc một thông tin thay đổi gây ảnh hưởng lan truyền lớn đến hàng loạt yêu cầu khác chưa được phân tách tốt.
+C. Tránh tham khảo ý kiến người dùng. D. Tránh việc viết tài liệu.  Đáp án đúng:  B
+Câu 37:  "Tính lần vết được" (Traceability) của một yêu cầu giúp kỹ sư làm gì?
+A. Biết được lập trình viên nào đã viết code cho chức năng này.
+B. Theo dõi nguồn gốc của yêu cầu và đánh giá tầm ảnh hưởng khi yêu cầu đó thay đổi.
+C. Theo dõi vị trí con trỏ chuột của người dùng. D. Sao lưu cơ sở dữ liệu.
+Đáp án đúng:  B
+Câu 38:  Sự khác biệt giữa Yêu cầu hệ thống và Thiết kế hệ thống (System Design) là gì?
+A. Yêu cầu tập trung vào CÁI GÌ (What) hệ thống phải làm, Thiết kế tập trung vào NHƯ THẾ NÀO (How) để làm được điều đó.
+B. Yêu cầu do máy tính sinh ra, Thiết kế do con người làm.
+C. Yêu cầu chỉ có đồ họa, Thiết kế chỉ có text.
+D. Yêu cầu làm sau khi đã Thiết kế xong.  Đáp án đúng:  A
+Câu 39:  Định dạng "Ngôn ngữ tự nhiên có cấu trúc" (Structured natural language) dùng để làm gì?
+A. Viết thơ. B. Giảm sự nhập nhằng bằng cách sử dụng các form/định dạng chuẩn, thuật ngữ nhất quán khi viết yêu cầu.
+C. Lập trình giao diện web. D. Giao tiếp với máy chủ.  Đáp án đúng:  B
+Câu 40:  Trong một tài liệu yêu cầu chuẩn (ví dụ IEEE), mục "Từ điển thuật ngữ" (Glossary) có vai trò gì?
+A. Định nghĩa cấu trúc các bảng SQL. B. Liệt kê tên các lập trình viên.
+C. Đảm bảo mọi người đọc (từ khách hàng đến đội kỹ thuật) hiểu các thuật ngữ chuyên môn một cách thống nhất.
+D. Hướng dẫn cách cài đặt phần mềm.  Đáp án đúng:  C
+Câu 41:  "Ca sử dụng" (Use case) thuộc về mô hình hóa ở góc nhìn nào của hệ thống?
+A. Góc nhìn cấu trúc. B. Góc nhìn tương tác (Interaction perspective). C. Góc nhìn dữ liệu.
+D. Góc nhìn triển khai.  Đáp án đúng:  B
+Câu 42:  Khi thu thập yêu cầu bằng Use case, câu mẫu "As a <role>, I want <goal> so that <benefit>" thường được gọi là gì trong Agile?
+A. Use case diagram. B. User story (Câu chuyện người dùng). C. System state. D. Class responsibility.
+Đáp án đúng:  B
+Câu 43:  Bản mô tả yêu cầu cho rằng:  "Hệ thống phải có phản hồi cực kỳ nhanh" .
+Yêu cầu này mắc phải lỗi gì phổ biến? A. Vi phạm quy tắc đạo đức.
+B. Thiếu tính kiểm chứng được và lượng hóa (thế nào là "cực kỳ nhanh"?). C. Quá dài dòng.
+D. Không phải tiếng Anh.  Đáp án đúng:  B
+Câu 44:  Việc phân tích "Sự thay đổi và chi phí" (Change analysis and costing) được thực hiện ở giai đoạn nào?
+A. Trước khi ký hợp đồng ban đầu. B. Trong quy trình Quản lý sự thay đổi yêu cầu, trước khi quyết định cài đặt thay đổi.
+C. Sau khi phần mềm đã bỏ đi. D. Khi viết Yêu cầu người dùng.  Đáp án đúng:  B
+Câu 45:  Ai là người chịu trách nhiệm chính trong việc thu thập và tạo ra tài liệu Yêu cầu (SRS)?
+A. System Analyst (Người phân tích hệ thống / Kỹ sư yêu cầu). B. Coder (Lập trình viên).
+C. Tester (Người kiểm thử). D. End User (Người dùng cuối).  Đáp án đúng:  A
+Câu 46:  Yêu cầu:  "Hệ thống tính thuế phải cập nhật công thức theo luật Thuế Thu nhập cá nhân sửa đổi năm 2024"  là ví dụ điển hình của: A. Yêu cầu hiệu năng.
+B. Yêu cầu giao diện. C. Yêu cầu miền (Domain requirement - luật pháp). D. Yêu cầu phần cứng.
+Đáp án đúng:  C
+Câu 47:  Việc thiết kế "Review" (Đánh giá thủ công) yêu cầu thường đòi hỏi điều gì?
+A. Sự tham gia của các công cụ tự động 100%.
+B. Sự giao tiếp tốt và tham gia của cả người phát triển, khách hàng và người dùng cuối.
+C. Viết mã nguồn ngay lập tức. D. Chỉ cần giám đốc dự án đọc duyệt.
+Đáp án đúng:  B
+Câu 48:  Biểu đồ nào của UML thường xuyên được sử dụng kết hợp nhất trong pha Đặc tả Yêu cầu để hiển thị tổng quan các chức năng?
+A. Biểu đồ triển khai (Deployment diagram). B. Biểu đồ lớp (Class diagram).
+C. Biểu đồ Ca sử dụng (Use case diagram). D. Biểu đồ máy trạng thái (State machine diagram).
+Đáp án đúng:  C
+Câu 49:  Đặc tả hình thức (Formal specification) sử dụng công cụ gì để loại bỏ hoàn toàn sự nhập nhằng?
+A. Các sơ đồ tư duy bằng tay. B. Ngôn ngữ, mô hình logic và toán học.
+C. Ngôn ngữ tự nhiên tiếng Anh. D. Giao diện đồ họa.  Đáp án đúng:  B
+Câu 50:  Yếu tố "Chính trị tổ chức" (Organization policies) ảnh hưởng như thế nào đến yêu cầu hệ thống?
+A. Không có bất kỳ ảnh hưởng nào. B. Nó làm thay đổi ngôn ngữ lập trình.
+C. Các chính sách, quyền lực và cơ cấu tổ chức có thể chi phối/bắt buộc cách các quy trình nghiệp vụ (và do đó là yêu cầu phần mềm) phải vận hành.
+D. Nó làm tăng tốc độ máy tính.  Đáp án đúng:  C
+NGÂN HÀNG TRẮC NGHIỆM: MÔ HÌNH HÓA HỆ THỐNG (50 CÂU)
+Câu 1:  Mô hình (model) được định nghĩa tốt nhất là gì?
+A. Là một kế hoạch phức tạp để xây dựng hệ thống.
+B. Không cần thiết nếu nhóm đã hiểu rõ công việc.
+C. Là sự đơn giản hóa của thực tế (thế giới thực). D. Là đoạn mã lập trình giao diện.
+Đáp án đúng:  C
+Câu 2:  Tại sao chúng ta cần mô hình hóa hệ thống? A. Giúp hình dung hệ thống.
+B. Cung cấp một khuôn mẫu để xây dựng hệ thống.
+C. Ghi lại các quyết định thiết kế quan trọng. D. Tất cả các phương án trên đều đúng.
+Đáp án đúng:  D
+Câu 3:  Đâu là một trong những nguyên lý quan trọng của mô hình hóa?
+A. Mô hình không ảnh hưởng đến cách giải quyết vấn đề.
+B. Sử dụng một mô hình duy nhất là đủ để hiểu toàn bộ hệ thống.
+C. Mô hình tốt nhất là mô hình được kết nối chặt chẽ với thực tế.
+D. Mô hình chỉ dành cho người dùng cuối xem.  Đáp án đúng:  C
+Câu 4:  Để hiểu toàn diện một phần mềm, nguyên lý mô hình hóa khuyến nghị điều gì?
+A. Chỉ cần dùng biểu đồ Ca sử dụng (Use case).
+B. Sử dụng một mô hình duy nhất thường không đủ, cần nhiều góc nhìn khác nhau.
+C. Chỉ cần mô hình mã nguồn. D. Không cần mô hình nếu dự án nhỏ.
+Đáp án đúng:  B
+Câu 5:  Mô hình hệ thống "hiện thời" (system-as-is) chủ yếu dùng để làm gì?
+A. Để sinh ra mã tự động. B. Giúp cho việc thu thập và phân tích yêu cầu (Kỹ nghệ yêu cầu).
+C. Để bán phần mềm cho khách hàng. D. Để thiết kế kiến trúc máy chủ.
+Đáp án đúng:  B
+Câu 6:  Biểu đồ nào của UML được sử dụng để mô tả cấu trúc tĩnh của hệ thống (các thực thể và quan hệ)?
+A. Biểu đồ Tuần tự (Sequence diagram). B. Biểu đồ Hoạt động (Activity diagram). C. Biểu đồ Lớp (Class diagram).
+D. Biểu đồ Ca sử dụng (Use case diagram).  Đáp án đúng:  C
+Câu 7:  Biểu đồ Máy trạng thái (State machine diagram) dùng để làm gì?
+A. Biểu diễn cấu trúc cơ sở dữ liệu. B. Biểu diễn cách hệ thống phản ứng với các sự kiện từ bên trong và bên ngoài.
+C. Phân chia module phần mềm. D. Trình bày giao diện người dùng.  Đáp án đúng:  B
+Câu 8:  Góc nhìn "Tương tác" (Interaction perspective) thường sử dụng loại biểu đồ nào?
+A. Biểu đồ Lớp và Biểu đồ Trạng thái. B. Biểu đồ Ca sử dụng và Biểu đồ Tuần tự.
+C. Biểu đồ Hoạt động và Biểu đồ Triển khai. D. Biểu đồ Đối tượng và Mô hình DFD.
+Đáp án đúng:  B
+Câu 9:  Mục đích chính của "Mô hình ngữ cảnh" (Context model) là gì?
+A. Xác định các thuật toán nội bộ. B. Định nghĩa các kiểu dữ liệu của biến.
+C. Xác định biên hệ thống (những gì thuộc về hệ thống và những gì thuộc về môi trường).
+D. Vẽ giao diện màn hình.  Đáp án đúng:  C
+Câu 10:  Việc xác định "Biên hệ thống" thường chịu ảnh hưởng sâu sắc bởi yếu tố nào?
+A. Ngôn ngữ lập trình được chọn. B. Tốc độ của CPU máy chủ.
+C. Các yếu tố tổ chức, chính trị và xã hội. D. Chuẩn mạng Internet.  Đáp án đúng:  C
+Câu 11:  Trong Biểu đồ hoạt động (Activity diagram), "Decision Node" (Nút quyết định) có chức năng gì?
+A. Hợp nhất hai luồng công việc. B. Quyết định nhánh hoạt động tiếp theo dựa trên các điều kiện (guards).
+C. Bắt đầu toàn bộ quy trình. D. Kết thúc toàn bộ quy trình.  Đáp án đúng:  B
+Câu 12:  Trong Biểu đồ hoạt động, "Fork Node" dùng để làm gì? A. Dừng một hoạt động.
+B. Trả về kết quả cho người dùng. C. Chia luồng điều khiển thành hai hay nhiều luồng chạy song song (đồng thời).
+D. Kết nối với cơ sở dữ liệu.  Đáp án đúng:  C
+Câu 13:  "Join Node" trong Biểu đồ hoạt động có đặc điểm gì?
+A. Tách một tiến trình thành nhiều tiến trình nhỏ. B. Hợp nhất các luồng đồng thời;
+hành động tiếp theo chỉ bắt đầu khi tất cả các luồng dẫn đến nó đều kết thúc.
+C. Bỏ qua các bước bị lỗi. D. Đại diện cho điểm kết thúc (Final node).
+Đáp án đúng:  B
+Câu 14:  Trong biểu đồ Ca sử dụng (Use case), quan hệ <<include>> (bao gộp) nghĩa là gì?
+A. Một ca sử dụng tùy chọn gọi một ca sử dụng khác.
+B. Hai ca sử dụng không liên quan gì đến nhau.
+C. Một ca sử dụng bắt buộc phải gọi/sử dụng một vài chi tiết của ca sử dụng khác trong luồng sự kiện của nó.
+D. Tác nhân kế thừa ca sử dụng.  Đáp án đúng:  C
+Câu 15:  Quan hệ <<extend>> (mở rộng) trong biểu đồ Ca sử dụng mang ý nghĩa gì?
+A. Hai tác nhân cùng thực hiện một công việc.
+B. Một ca sử dụng có thể thêm chức năng cho ca sử dụng khác trong một điều kiện nhất định.
+C. Xóa bỏ một ca sử dụng cũ. D. Copy dữ liệu từ ca sử dụng này sang ca sử dụng khác.
+Đáp án đúng:  B
+Câu 16:  Tác nhân (Actor) trong biểu đồ Use case có thể là gì?
+A. Chỉ có thể là con người (người dùng cuối). B. Chỉ có thể là phần cứng máy tính.
+C. Một lớp người, tổ chức, thiết bị hoặc một hệ thống phần mềm bên ngoài tương tác với hệ thống.
+D. Biến số trong mã nguồn.  Đáp án đúng:  C
+Câu 17:  Trong Biểu đồ Tuần tự (Sequence diagram), "Đường sống" (Lifeline) biểu diễn điều gì?
+A. Vòng đời của toàn bộ dự án. B. Các thể hiện của lớp, thành phần, tác nhân tham gia vào tương tác theo chiều dọc thời gian.
+C. Thời gian bảo hành của phần mềm. D. Độ dài của một đoạn code.  Đáp án đúng:  B
+Câu 18:  Trong Biểu đồ Tuần tự, thông điệp mà "đối tượng gửi phải chờ cho đến khi nhận được phản hồi từ đối tượng nhận" gọi là gì?
+A. Thông điệp bất đồng bộ (Asynchronous message). B. Thông điệp đồng bộ (Synchronous message).
+C. Thông điệp lỗi (Error message). D. Thông điệp tạo mới (Create message).  Đáp án đúng:  B
+Câu 19:  Khối hình chữ nhật nằm dọc trên "Đường sống" trong biểu đồ tuần tự có nghĩa là gì?
+A. Nút kết thúc chương trình. B. Một khoảng thực thi (Activation/Execution) của đối tượng khi nó nhận được thông điệp.
+C. Cơ sở dữ liệu. D. Biến toàn cục.  Đáp án đúng:  B
+Câu 20:  Mũi tên có ký hiệu <<create>> trong biểu đồ tuần tự dùng để: A. Tạm dừng một tiến trình.
+B. Mô tả hành động đối tượng gửi khởi tạo ra một đối tượng nhận mới.
+C. Xóa đối tượng khỏi bộ nhớ. D. Trả về kết quả hàm.  Đáp án đúng:  B
+Câu 21:  Trong Biểu đồ Lớp (Class Diagram), khái niệm "Lớp" (Class) là gì?
+A. Tập hợp các hàm toán học. B. Tập các đối tượng (thể hiện) có cùng đặc điểm, hành vi và ngữ nghĩa.
+C. Một bảng liệt kê màu sắc giao diện. D. Tập hợp các tác nhân (Actors).
+Đáp án đúng:  B
+Câu 22:  Mối quan hệ "Tụ hợp/Hợp thành" (Aggregation/Composition) trong biểu đồ lớp mô tả điều gì?
+A. Quan hệ anh - em. B. Quan hệ giữa toàn thể và bộ phận (Whole-part relationship).
+C. Quan hệ khách hàng - máy chủ. D. Quan hệ ngang hàng độc lập.  Đáp án đúng:  B
+Câu 23:  Mô hình "Hướng dữ liệu" (Data-driven models) và Biểu đồ luồng dữ liệu (DFD) thường phù hợp nhất cho: A. Hệ thống trò chơi 3D.
+B. Hệ thống thời gian thực. C. Các hệ thống nghiệp vụ (Business system) để chỉ ra chuỗi xử lý đầu vào/đầu ra.
+D. Phần mềm nhúng trên ô tô.  Đáp án đúng:  C
+Câu 24:  Mô hình "Hướng sự kiện" (Event-driven models) thường được sử dụng nhiều nhất cho loại hệ thống nào?
+A. Website tin tức. B. Hệ thống quản lý nhân sự. C. Hệ thống thời gian thực (Real-time system).
+D. Cơ sở dữ liệu tĩnh.  Đáp án đúng:  C
+Câu 25:  Biểu đồ luồng dữ liệu (DFD) thể hiện điều gì?
+A. Cách dữ liệu được biến đổi (transformed) bởi các chức năng của hệ thống.
+B. Mối quan hệ kế thừa giữa các đối tượng. C. Giao diện đồ họa của người dùng.
+D. Thời gian chạy của một thuật toán.  Đáp án đúng:  A
+Câu 26:  Kỹ nghệ hướng mô hình (Model-driven engineering - MDE) coi kết quả đầu ra cơ bản của quy trình phát triển là gì?
+A. Mã nguồn (Source code) viết bằng tay. B. Các bản báo cáo tài chính.
+C. Các mô hình (từ đó sinh ra mã tự động bằng chuyển đổi mô hình). D. Giao diện HTML.
+Đáp án đúng:  C
+Câu 27:  Ưu điểm lớn nhất của Kỹ nghệ hướng mô hình (MDE) là gì?
+A. Không cần người dùng tham gia. B. Cho phép kỹ sư làm việc ở cấp độ trừu tượng cao và tự động sinh mã.
+C. Hoàn toàn miễn phí. D. Phần mềm không bao giờ có lỗi.  Đáp án đúng:  B
+Câu 28:  Một trong những nhược điểm chính của Kỹ nghệ hướng mô hình (MDE) là gì?
+A. Chi phí tạo ra các bộ chuyển đổi mô hình và sinh mã tự động cao;
+có sự sai khác giữa mức mô hình và cài đặt.
+B. Chạy quá nhanh làm người dùng không kịp nhìn. C. Không thể sử dụng UML trong MDE.
+D. Chỉ vẽ được trên giấy.  Đáp án đúng:  A
+Câu 29:  Hai chức năng chính yếu của việc mô hình hóa trực quan (Visual modeling) là gì?
+A. Thay thế hoàn toàn mã nguồn và tiết kiệm chi phí phần cứng.
+B. Cải thiện giao tiếp/đọc hiểu trong nhóm và ghi chép lại cấu trúc, hành vi hệ thống trước khi code.
+C. Để mã hóa dữ liệu và nén file. D. Trình bày cho bộ phận nhân sự.
+Đáp án đúng:  B
+Câu 30:  Trạng thái (state) của một đối tượng được định nghĩa bởi yếu tố nào?
+A. Tên của lập trình viên tạo ra nó. B. Các thuộc tính và mối quan hệ của đối tượng đó.
+C. Tốc độ xung nhịp CPU. D. Dung lượng ổ cứng.  Đáp án đúng:  B
+Câu 31:  Hành vi quan sát được (visible behavior) của một đối tượng được mô hình hóa thông qua cái gì?
+A. Các thuộc tính (Attributes). B. Các sự kiện (Events). C. Các thao tác/phương thức (Operations/Methods).
+D. Các quan hệ (Relationships).  Đáp án đúng:  C
+Câu 32:  Công nghệ đối tượng (Object technology) được xây dựng dựa trên các nguyên lý cốt lõi nào?
+A. Rẽ nhánh và lặp. B. Trừu tượng hóa (Abstraction) và Mô đun hóa (Modularity). C. Lập trình tuyến tính.
+D. Lưu trữ mảng và biến con trỏ.  Đáp án đúng:  B
+Câu 33:  Mô hình hóa hành vi (Behavior modeling) CÓ PHẢI chỉ dùng duy nhất cho việc phân tích các hệ thống thời gian thực (real-time systems) không?
+A. Đúng. B. Sai. (Nó dùng cho nhiều loại hệ thống khác).  Đáp án đúng:  B
+Câu 34:  Tạo lập và làm mịn các ca sử dụng (use cases) có phải là một phần quan trọng của mô hình hóa dựa trên kịch bản (scenario-based modeling) không?
+A. Đúng. B. Sai.  Đáp án đúng:  A
+Câu 35:  Khi tạo ra một Use case sơ bộ, việc xem xét các "tương tác thay thế" (alternative actor interactions) có quan trọng không?
+A. Rất quan trọng (True). B. Không quan trọng (False).  Đáp án đúng:  A
+Câu 36:  Theo các nguyên tắc, có những trường hợp không cần tạo biểu diễn đồ họa cho kịch bản sử dụng (usage scenario).
+Nhận định này Đúng hay Sai? A. Đúng. B. Sai (UML luôn coi trọng việc biểu diễn đồ họa).
+Đáp án đúng:  B
+Câu 37:  Biểu đồ tuần tự UML (Sequence diagram) thể hiện thứ tự xử lý các sự kiện hệ thống.
+Nhận định này Đúng hay Sai? A. Đúng. B. Sai.  Đáp án đúng:  A
+Câu 38:  Trong biểu đồ hoạt động, "Initial Node" (Nút khởi đầu) dùng để chỉ định: A. Nơi thoát khỏi hệ thống.
+B. Vị trí lưu trữ dữ liệu. C. Điểm bắt đầu của một chuỗi hoạt động.
+D. Một cảnh báo lỗi.  Đáp án đúng:  C
+Câu 39:  Mũi tên có chữ <<return>> (hoặc nét đứt) trong biểu đồ tuần tự biểu thị ý nghĩa gì?
+A. Tín hiệu đồng bộ hóa mạng. B. Lệnh gọi đệ quy.
+C. Tín hiệu trả về từ đối tượng nhận, để kết thúc một khoảng thực thi.
+D. Yêu cầu nhập lại mật khẩu.  Đáp án đúng:  C
+Câu 40:  Mô hình hướng sự kiện (Event-driven) dựa trên giả định cơ bản nào?
+A. Hệ thống có bộ nhớ vô hạn. B. Dữ liệu chỉ chảy theo một hướng duy nhất.
+C. Hệ thống có một tập hữu hạn các trạng thái và các sự kiện sẽ kích hoạt sự chuyển trạng thái.
+D. Không cần thiết kế cơ sở dữ liệu.  Đáp án đúng:  C
+Câu 41:  "Quan hệ tổng quát hóa" (Generalization) trong biểu đồ lớp thường được dùng để chỉ: A. Quan hệ 1-Nhiều.
+B. Quan hệ Phụ thuộc (Dependency). C. Quan hệ Kế thừa (Inheritance) - lớp con chi tiết hóa lớp cha.
+D. Tương tác gửi thông điệp.  Đáp án đúng:  C
+Câu 42:  Trong biểu đồ Tuần tự, "Thông điệp bất đồng bộ" (Asynchronous message) có ý nghĩa là: A. Đối tượng gửi phải chờ đối tượng nhận xử lý xong.
+B. Người gửi có thể tiếp tục công việc của mình mà không cần phải chờ phản hồi từ người nhận.
+C. Thông điệp bị mất trên mạng. D. Hai đối tượng chạy trên cùng một CPU.
+Đáp án đúng:  B
+Câu 43:  Trong biểu đồ hoạt động, "Merge Node" có chức năng gì?
+A. Bắt đầu rẽ nhánh có điều kiện. B. Kết thúc toàn bộ phần mềm.
+C. Hợp nhất một nhánh phụ trở lại luồng nhánh chính (sau khi đã rẽ nhánh bởi Decision node).
+D. Gửi email cho khách hàng.  Đáp án đúng:  C
+Câu 44:  Thuộc tính lực lượng (Multiplicity) 1..* trong biểu đồ lớp mang ý nghĩa gì?
+A. Chính xác là 1 đối tượng. B. Từ 1 đến nhiều đối tượng (Ít nhất là 1).
+C. Không có hoặc có 1 đối tượng (0..1). D. Vô hạn đối tượng không cần điều kiện.
+Đáp án đúng:  B
+Câu 45:  Đối với biểu đồ Máy trạng thái (State Machine), quá trình chuyển đổi giữa trạng thái này sang trạng thái khác thường bị kích hoạt bởi: A. Việc biên dịch mã nguồn.
+B. Sự kiện (Event) hoặc dữ liệu đầu vào. C. Việc thay đổi giao diện.
+D. Người quản lý dự án.  Đáp án đúng:  B
+Câu 46:  Việc kết hợp Sử dụng "Send Signal Action" và "Receive Signal Action" trong biểu đồ hoạt động nhằm mục đích: A. Ngắt điện máy tính.
+B. Biểu diễn việc một thông điệp/tín hiệu được gửi tới hoặc nhận từ bên ngoài/tiến trình khác.
+C. Vẽ màu cho nút bấm. D. Thay thế biểu đồ lớp.  Đáp án đúng:  B
+Câu 47:  Chuyên gia miền (Domain expert) giao tiếp và trao đổi với kỹ sư phần mềm hiệu quả nhất thông qua cơ chế nào trong MDE?
+A. Mã nguồn assembly. B. Bảng lương. C. Làm việc ở cấp độ trừu tượng cao bằng các Mô hình.
+D. Sửa lỗi phần cứng trực tiếp.  Đáp án đúng:  C
+Câu 48:  Đâu là phát biểu ĐÚNG về mô hình cấu trúc hệ thống (Structural model)?
+A. Thể hiện các hành động theo thời gian thực. B. Chỉ dùng để vẽ giao diện web.
+C. Ở dạng mô hình tĩnh, nó mô tả cấu trúc của thiết kế hệ thống (ví dụ: Biểu đồ lớp).
+D. Không được dùng khi thảo luận kiến trúc.  Đáp án đúng:  C
+Câu 49:  Trong thiết kế Use case, cú pháp mẫu "As a <role>, I want <goal/desire> so that <benefit>" thường được gọi là gì?
+A. Mã giả. B. Câu chuyện người dùng (User Story) / Kịch bản. C. Thuật toán.
+D. Sơ đồ thực thể liên kết.  Đáp án đúng:  B
+Câu 50:  Góc nhìn bên ngoài (External perspective) của hệ thống tập trung vào điều gì?
+A. Các hàm nội bộ của một class. B. Mã hóa dữ liệu truyền tải.
+C. Mô hình hóa ngữ cảnh và môi trường của hệ thống, chỉ ra mối quan hệ với các hệ thống khác.
+D. Phản hồi lỗi của SQL.  Đáp án đúng:  C
+NGÂN HÀNG TRẮC NGHIỆM: THIẾT KẾ HỆ THỐNG (50 CÂU)
+Câu 1:  Theo định nghĩa của Len Bass, Kiến trúc phần mềm của một hệ thống là gì?
+A. Giao diện đồ họa hiển thị cho người dùng.
+B. Tập các cấu trúc gồm các phần tử phần mềm, các mối quan hệ giữa chúng và thuộc tính của cả hai.
+C. Tập hợp mã nguồn và kịch bản kiểm thử. D. Biểu đồ thuật toán mô tả chức năng.
+Đáp án đúng:  B
+Câu 2:  Nguyên lý thiết kế "Separation of concerns" (Phân tách các khía cạnh) khuyến nghị điều gì?
+A. Dồn toàn bộ logic vào một module duy nhất để dễ tìm.
+B. Chia ứng dụng thành các phần ít chồng chéo chức năng, giảm tương tác để tăng tính kết dính.
+C. Mỗi thành phần phải biết chi tiết bên trong của thành phần khác.
+D. Tất cả các lớp đều phải truy cập được cơ sở dữ liệu trực tiếp.
+Đáp án đúng:  B
+Câu 3:  Mẫu kiến trúc MVC được chia thành ba thành phần nào? A. Master - Viewer - Client.
+B. Model - View - Controller. C. Module - Vector - Code. D. Main - Variable - Component.
+Đáp án đúng:  B
+Câu 4:  Trong thiết kế kiến trúc, thuộc tính chất lượng (Quality attribute) "Flexibility" (Tính linh hoạt) trả lời cho câu hỏi nào?
+A. Hệ thống có thể xử lý bao nhiêu giao dịch mỗi giây?
+B. Dữ liệu có an toàn trước hacker không? C. Chúng ta có thể thay đổi thành phần X không?
+D. Máy chủ có chạy được trên Linux không?  Đáp án đúng:  C
+Câu 5:  Trong thiết kế Giao diện người dùng (UI), quy tắc "Khả năng nhớ có hạn" chỉ ra rằng con người thường chỉ nhớ tối đa bao nhiêu mục thông tin cùng lúc?
+A. 3 mục. B. 5 mục. C. 7 mục. D. 10 mục.  Đáp án đúng:  C
+Câu 6:  Mẫu kiến trúc "Khách/Chủ" (Client-Server) có đặc điểm nào?
+A. Hệ thống phân tán với hai thành phần riêng biệt Khách và Chủ, trong đó cấu hình có thể là 1-1, 1-n hoặc n-1.
+B. Dữ liệu truyền qua các ống dẫn và xử lý ở bộ lọc.
+C. Chia thành các lớp chồng lên nhau. D. Hoạt động trên một máy tính duy nhất.
+Đáp án đúng:  A
+Câu 7:  Khi thiết kế cơ sở dữ liệu logic từ mô hình ERM, mối quan hệ dạng 1-n (Một-Nhiều) được xử lý bằng cách nào?
+A. Tạo ra một bảng mới hoàn toàn chứa khóa của hai bên.
+B. Lấy khóa chính của bảng phía "1" làm khóa ngoại vào bảng phía "nhiều".
+C. Lấy khóa của bảng phía "nhiều" vào bảng phía "1".
+D. Gộp cả hai thực thể thành một bảng duy nhất.  Đáp án đúng:  B
+Câu 8:  Kiến trúc ESB (Enterprise Service Bus) - Bus thông điệp, thể hiện đặc điểm gì?
+A. Chỉ dùng cho các hệ thống máy tính cục bộ.
+B. Tương tác giữa các thành phần được thực hiện bằng cách truyền thông điệp trên một bus chung.
+C. Không cho phép các thành phần giao tiếp với nhau. D. Là biến thể của kiến trúc MVC.
+Đáp án đúng:  B
+Câu 9:  Trong thiết kế CSDL quan hệ, Chuẩn 1 (1NF) yêu cầu điều gì đối với các thuộc tính (cột)?
+A. Phải có tính kế thừa. B. Không có phụ thuộc bắc cầu.
+C. Trong một quan hệ không có nhóm lặp, mỗi thuộc tính chỉ chứa giá trị đơn.
+D. Bắt buộc mọi thuộc tính phải là khóa ngoại.  Đáp án đúng:  C
+Câu 10:  Đặc điểm cốt lõi của thông báo lỗi (Error message) tốt khi thiết kế UI là gì?
+A. Sử dụng các mã code kỹ thuật sâu để lập trình viên dễ đọc.
+B. Lịch sự, rõ ràng, mang tính xây dựng và thiết kế phù hợp với kinh nghiệm của người dùng.
+C. Cảnh báo mức độ nghiêm trọng bằng cách rung màn hình.
+D. Ngắn gọn nhất có thể, ví dụ: "Error 404".  Đáp án đúng:  B
+Câu 11:  Kiến trúc phần mềm quan trọng vì nó mang lại lợi ích gì?
+A. Hỗ trợ giao tiếp giữa các bên liên quan.
+B. Xác định các ràng buộc cho việc hiện thực hóa.
+C. Dự đoán chất lượng hệ thống và nâng cao độ chính xác khi dự đoán chi phí.
+D. Tất cả các phương án trên.  Đáp án đúng:  D
+Câu 12:  Thuộc tính "Performance" (hiệu năng), "Security" (bảo mật), và "Availability" (khả dụng) thuộc nhóm thuộc tính chất lượng nào?
+A. Thuộc tính thiết kế (Design qualities). B. Thuộc tính thời gian thực thi (Run-time qualities).
+C. Thuộc tính hệ thống (System qualities). D. Thuộc tính người dùng (User qualities).  Đáp án đúng:  B
+Câu 13:  Nguyên lý thiết kế "Trách nhiệm đơn" (Single Responsibility Principle - SRP) phát biểu điều gì?
+A. Một lớp đối tượng chỉ có duy nhất một lý do để thay đổi.
+B. Lớp đối tượng phải dễ dàng mở rộng. C. Mỗi thành phần phải biết chi tiết về một thành phần khác.
+D. Lớp con phải thay thế được lớp cha.  Đáp án đúng:  A
+Câu 14:  Các bước chính trong quá trình thiết kế kiến trúc theo quy trình lặp là gì?
+A. Khởi tạo, Phân tích, Lập trình, Kiểm thử, Bảo trì.
+B. Xác định mục tiêu, Kịch bản sử dụng chính, Tổng quan ứng dụng, Các vấn đề chính, Giải pháp dự kiến.
+C. Thu thập, Đặc tả, Thẩm định, Quản lý. D. Vẽ biểu đồ lớp, Vẽ biểu đồ tuần tự, Viết mã nguồn.
+Đáp án đúng:  B
+Câu 15:  Kiến trúc "Phân lớp" (Layered Architecture) có quy tắc truy cập nào sau đây?
+A. Bất kỳ lớp nào cũng có thể gọi bất kỳ lớp nào.
+B. Lớp dưới cùng có thể sử dụng chức năng của lớp trên cùng.
+C. Chỉ lớp trên mới được sử dụng chức năng của lớp dưới.
+D. Các lớp giao tiếp với nhau qua một Bus thông điệp.  Đáp án đúng:  C
+Câu 16:  Kiến trúc "Ống dẫn và Bộ lọc" (Pipe and Filter) có đặc điểm nào?
+A. Dữ liệu truyền qua các ống dẫn để đến và được xử lý ở các bộ lọc.
+B. Có một máy chủ trung tâm quản lý tất cả máy khách.
+C. Ứng dụng được chia thành Model, View và Controller. D. Sử dụng mạng Peer-to-Peer.  Đáp án đúng:  A
+Câu 17:  Kiến trúc "Hướng dịch vụ" (SOA) cho phép các dịch vụ có đặc tính gì?
+A. Kết nối cứng nhắc, không thể tách rời. B. Kết nối mềm dẻo, giao diện chuẩn hóa, có thể được xuất bản và tìm kiếm.
+C. Chỉ chạy trên một máy tính duy nhất. D. Không hỗ trợ truy cập qua mạng.
+Đáp án đúng:  B
+Câu 18:  Khi thiết kế mô hình dữ liệu logic, "Chuẩn 2" (2NF) yêu cầu điều kiện gì?
+A. Quan hệ đạt chuẩn 1NF và không chứa phụ thuộc bắc cầu.
+B. Quan hệ đạt chuẩn 1NF và không chứa phụ thuộc một phần vào khóa.
+C. Mỗi bảng chỉ có tối đa 2 cột. D. Tất cả các trường dữ liệu phải là kiểu số nguyên.
+Đáp án đúng:  B
+Câu 19:  Khi ánh xạ quan hệ "Nhiều-Nhiều" (Many-to-many) từ ERM vào CSDL quan hệ, ta phải làm gì?
+A. Lấy khóa của bảng này làm khóa ngoại của bảng kia.
+B. Tạo một bảng mới chứa khóa của cả hai bảng tham gia. C. Xóa bỏ một thực thể.
+D. Gộp hai bảng lại thành một bảng khổng lồ.  Đáp án đúng:  B
+Câu 20:  Trong phương pháp thiết kế Hướng đối tượng (OOAD), ta có thể xác định các "Lớp đối tượng" (Classes) dựa trên kỹ thuật nào từ tài liệu yêu cầu?
+A. Phân tích các tính từ mô tả màu sắc.
+B. Phân tích theo khía cạnh ngữ pháp, trong đó lớp và thuộc tính thường là các danh từ.
+C. Chỉ dựa vào sở thích của người lập trình. D. Dựa vào các biểu thức toán học.
+Đáp án đúng:  B
+Câu 21:  Trong thiết kế lớp (Class design), mức độ truy cập (Access modifier) "Protected" có ý nghĩa gì?
+A. Có thể truy cập từ mọi nơi (Public). B. Chỉ truy cập được ở bên trong lớp đó (Private).
+C. Có thể truy cập được từ lớp con và các lớp trong cùng gói (package).
+D. Chỉ truy cập được qua Internet.  Đáp án đúng:  C
+Câu 22:  Nguyên lý OCP (Open Closed Principle) trong bộ nguyên lý SOLID yêu cầu điều gì?
+A. Lớp đối tượng phải đóng kín hoàn toàn, không bao giờ được sửa đổi hay mở rộng.
+B. Lớp đối tượng phải thiết kế sao cho dễ dàng mở rộng (Open) mà không cần phải thay đổi mã nguồn hiện tại (Closed).
+C. Lớp con phải thay thế được lớp cha. D. Phụ thuộc vào lớp trừu tượng thay vì lớp cụ thể.
+Đáp án đúng:  B
+Câu 23:  Nguyên lý DIP (Dependency Inversion Principle) yêu cầu điều gì?
+A. Các module cấp cao phải phụ thuộc vào module cấp thấp.
+B. Phụ thuộc vào các giao diện/lớp trừu tượng (Abstractions) thay vì phụ thuộc vào các lớp cài đặt cụ thể (Concretions).
+C. Một lớp chỉ nên có một lý do để thay đổi.
+D. Chia nhỏ các interface lớn thành các interface nhỏ.  Đáp án đúng:  B
+Câu 24:  Trong Phân tích Ca sử dụng (Use-Case Analysis), người ta chia hệ thống thành 3 loại lớp phân tích (Analysis classes) nào?
+A. Lớp Dữ liệu, Lớp Mạng, Lớp Giao diện. B. Lớp Biên (Boundary), Lớp Điều khiển (Control), Lớp Thực thể (Entity).
+C. Lớp Master, Lớp Slave, Lớp Client. D. Lớp Hình ảnh, Lớp Âm thanh, Lớp Văn bản.
+Đáp án đúng:  B
+Câu 25:  Nhiệm vụ chính của lớp "Thực thể" (Entity class) trong phân tích Use-case là gì?
+A. Hiển thị thông tin lên màn hình. B. Lưu trữ và quản lý thông tin/dữ liệu bền vững của hệ thống.
+C. Điều phối luồng hoạt động của use-case. D. Giao tiếp với các thiết bị phần cứng bên ngoài.
+Đáp án đúng:  B
+Câu 26:  Nhiệm vụ chính của lớp "Biên" (Boundary class) là gì?
+A. Tính toán các thuật toán phức tạp. B. Lưu trữ dữ liệu vào CSDL.
+C. Quản lý sự giao tiếp/tương tác giữa hệ thống và môi trường bên ngoài (các tác nhân/actors).
+D. Kết thúc phần mềm.  Đáp án đúng:  C
+Câu 27:  Trong Phân tích Use-case, lớp "Điều khiển" (Control class) có vai trò gì?
+A. Chứa cấu trúc bảng cơ sở dữ liệu. B. Vẽ giao diện người dùng.
+C. Điều phối, kiểm soát luồng hành vi của một (hoặc một số) use-case phức tạp.
+D. Kết nối với hệ điều hành máy tính.  Đáp án đúng:  C
+Câu 28:  Khi vẽ Biểu đồ Tuần tự (Sequence Diagram), đường kẻ đứt nét thẳng đứng nằm dưới mỗi đối tượng được gọi là gì?
+A. Thông điệp phản hồi. B. Đường sống (Lifeline) của đối tượng. C. Khối thực thi (Activation).
+D. Tác nhân (Actor).  Đáp án đúng:  B
+Câu 29:  Sự khác biệt giữa quan hệ Tụ hợp (Aggregation) và quan hệ Kết hợp (Association) thông thường là gì?
+A. Aggregation thể hiện mối quan hệ "toàn thể - bộ phận" (whole-part), còn Association thể hiện các đối tượng độc lập có liên kết với nhau.
+B. Association chỉ dùng cho kế thừa. C. Aggregation không bao giờ được dùng trong UML.
+D. Không có sự khác biệt nào.  Đáp án đúng:  A
+Câu 30:  "Cơ chế phân tích" (Analysis Mechanisms) được sử dụng để làm gì trong pha Phân tích?
+A. Để sinh mã tự động ra ngôn ngữ C++.
+B. Cung cấp một đại diện viết tắt cho các hành vi phức tạp (như bảo mật, lưu trữ) nhằm giảm độ phức tạp khi phân tích.
+C. Để vẽ giao diện người dùng. D. Tính toán lương nhân viên.  Đáp án đúng:  B
+Câu 31:  Mục tiêu chính của pha "Thiết kế Ca sử dụng" (Use-Case Design) là gì?
+A. Thu thập yêu cầu từ khách hàng. B. Làm mịn các hiện thực ca sử dụng (từ pha phân tích) bằng các phần tử Thiết kế (Design elements/Subsystems) cụ thể hơn.
+C. Viết mã nguồn cuối cùng. D. Xóa bỏ các biểu đồ UML.  Đáp án đúng:  B
+Câu 32:  Trong Thiết kế Hệ thống con (Subsystem Design), nguyên tắc giao tiếp giữa các hệ thống con là gì?
+A. Các hệ thống con có thể truy cập trực tiếp vào các biến private của nhau.
+B. Sự phụ thuộc giữa các hệ thống con nên thông qua các "Giao diện hệ thống con" (Subsystem Interfaces) thay vì phụ thuộc vào các lớp bên trong nó.
+C. Không bao giờ được phép giao tiếp với nhau. D. Phải giao tiếp qua trung gian là người dùng.
+Đáp án đúng:  B
+Câu 33:  Khi ánh xạ mô hình đối tượng vào cơ sở dữ liệu quan hệ (RDBMS), quan hệ "1-1" được xử lý bằng cách nào?
+A. Thêm khóa chính của một bảng làm khóa ngoại vào bảng còn lại.
+B. Tạo một bảng thứ 3. C. Xóa bỏ một đối tượng. D. Chuyển thành kiểu dữ liệu mảng (Array).
+Đáp án đúng:  A
+Câu 34:  Theo định nghĩa trong thiết kế kiến trúc, "Kịch bản sử dụng chính" (Key scenarios) có vai trò gì?
+A. Liệt kê toàn bộ 100% chức năng hệ thống.
+B. Là sự tổng quát của nhiều use-case, có ảnh hưởng lớn và thể hiện sự đánh đổi giữa các thuộc tính chất lượng.
+C. Là kịch bản kiểm thử phần mềm tự động. D. Kịch bản lỗi của hệ thống.
+Đáp án đúng:  B
+Câu 35:  Crosscutting concerns (các yếu tố cắt ngang) trong thiết kế kiến trúc thường bao gồm những vấn đề nào?
+A. Màu sắc giao diện và phông chữ. B. Logging (ghi nhật ký), Exception handling (xử lý ngoại lệ), Security (bảo mật), Caching.
+C. Cơ sở dữ liệu và RAM. D. Mô hình thác nước và Agile.  Đáp án đúng:  B
+Câu 36:  Trong thiết kế giao diện (UI), nguyên tắc "Tính nhất quán" (Consistency) có nghĩa là gì?
+A. Mọi màn hình phải có màu đỏ. B. Các thành phần/chức năng tương tự nhau nên hoạt động và có định dạng, kiểu dáng giống nhau.
+C. Không bao giờ thay đổi giao diện sau khi phát hành.
+D. Yêu cầu người dùng phải xác nhận mật khẩu liên tục.  Đáp án đúng:  B
+Câu 37:  Đo lường tính dễ dùng (Usability) qua "Tốc độ thực hiện" (Speed of performance) nghĩa là: A. Tốc độ CPU xử lý đồ họa.
+B. Thời gian cần thiết để người dùng thực hiện một công việc làm thước đo (benchmark task).
+C. Thời gian lập trình viên tạo ra màn hình đó. D. Tốc độ truyền tải qua mạng internet.
+Đáp án đúng:  B
+Câu 38:  Sự khác biệt giữa kiến trúc "Kiểu kho dữ liệu" (Repository architecture) và các kiến trúc khác là gì?
+A. Chỉ dùng để kết nối 2 máy tính với nhau.
+B. Các hệ thống con trao đổi dữ liệu thông qua một kho dữ liệu trung tâm dùng chung.
+C. Không có dữ liệu nào được lưu lại. D. Dữ liệu chạy theo đường ống một chiều.
+Đáp án đúng:  B
+Câu 39:  SOLID là các nguyên lý thiết kế áp dụng chủ yếu cho phương pháp nào?
+A. Thiết kế cấu trúc (Structured Design). B. Thiết kế giao diện (UI Design).
+C. Thiết kế hướng đối tượng (Object-Oriented Design). D. Thiết kế cơ sở dữ liệu quan hệ.
+Đáp án đúng:  C
+Câu 40:  Khi thực hiện Phân tích Use-case (Use-case Analysis), nếu có một lớp "RegisterForCoursesForm", lớp này thuộc Stereotype nào?
+A. Entity. B. Control. C. Boundary. D. Exception.  Đáp án đúng:  C
+Câu 41:  Thuộc tính Lực lượng (Multiplicity) trong biểu đồ lớp trả lời cho câu hỏi nào?
+A. Lớp này cần bao nhiêu bộ nhớ RAM? B. Sự liên kết này là bắt buộc hay tùy chọn, và số lượng tối thiểu/tối đa các thể hiện có thể liên kết là bao nhiêu?
+C. Lớp này kế thừa từ bao nhiêu lớp cha? D. Có bao nhiêu tác nhân sử dụng hệ thống?
+Đáp án đúng:  B
+Câu 42:  Việc lập biểu đồ VOPC (View of Participating Classes) trong phân tích Use-Case sử dụng loại biểu đồ UML nào?
+A. Biểu đồ Máy trạng thái (State Machine Diagram). B. Biểu đồ Hoạt động (Activity Diagram).
+C. Biểu đồ Lớp (Class Diagram). D. Biểu đồ Triển khai (Deployment Diagram).  Đáp án đúng:  C
+Câu 43:  Lỗi nhập liệu từ người dùng (UI Design) thường gặp phải khi nào?
+A. Khi người dùng cố ý phá hoại hệ thống.
+B. Khi hệ thống có thông báo lỗi mơ hồ (hướng hệ thống thay vì hướng người dùng) và giao diện không thân thiện.
+C. Khi cơ sở dữ liệu bị mất kết nối. D. Khi máy tính bị nhiễm virus.
+Đáp án đúng:  B
+Câu 44:  Khi ánh xạ các lớp vào cơ sở dữ liệu theo kiến trúc Persistency, một thuộc tính mang kiểu dữ liệu nguyên thủy (primitive) hoặc chuỗi (String) của lớp Entity thường được chuyển thành gì?
+A. Một bảng mới. B. Khóa ngoại (Foreign key). C. Một cột (Column) trong bảng của lớp đó.
+D. Một Trigger trong CSDL.  Đáp án đúng:  C
+Câu 45:  Trong thiết kế kiến trúc, mô hình Client-Queue-Client (Kiến trúc hàng đợi bị động) cho phép điều gì?
+A. Máy khách không thể gửi thông tin cho nhau.
+B. Các client giao tiếp với nhau thông qua một hàng đợi do Server đóng vai trò trung gian lưu trữ.
+C. Khách hàng xếp hàng đợi mua phần mềm. D. Xóa bỏ hoàn toàn vai trò của máy chủ.
+Đáp án đúng:  B
+Câu 46:  Hoạt động nào KHÔNG nằm trong các bước Khung của quá trình Tinh chỉnh Hiện thực hóa Ca sử dụng (Use-Case Realization Refinement)?
+A. Nhận diện các đối tượng tham gia. B. Lập lịch dự án cho các lập trình viên.
+C. Phân bổ trách nhiệm giữa các đối tượng. D. Mô hình hóa thông điệp giữa các đối tượng.
+Đáp án đúng:  B
+Câu 47:  Trong biểu đồ Tuần tự của pha Thiết kế chi tiết, thông điệp dạng <<create>> thể hiện thao tác nào?
+A. Khởi tạo cơ sở dữ liệu. B. Gửi một cảnh báo cho người dùng.
+C. Đối tượng gửi thực hiện hành động tạo mới đối tượng nhận. D. Phá hủy đối tượng.
+Đáp án đúng:  C
+Câu 48:  Kiến trúc "Ứng dụng máy chủ" (Application Server) là một dạng đặc biệt của mô hình nào?
+A. Mô hình Ống dẫn - Bộ lọc. B. Mô hình Khách/Chủ (Client-Server), trong đó phía chủ chứa các ứng dụng và dịch vụ.
+C. Mô hình P2P (Peer-to-Peer). D. Mô hình Standalone (Máy trạm độc lập).  Đáp án đúng:  B
+Câu 49:  Theo nguyên tắc thiết kế UI, việc thiết kế "Khả năng phục hồi" (Recoverability) nhắm đến mục đích gì?
+A. Giúp khôi phục lại máy chủ bị sập nguồn.
+B. Cho phép người dùng quay về trạng thái trước đó nếu họ lỡ tay gây ra lỗi (ví dụ: tính năng Undo).
+C. Hồi phục mật khẩu qua email. D. Backup dữ liệu hàng đêm.  Đáp án đúng:  B
+Câu 50:  Trong pha Thiết kế Hệ thống con (Subsystem Design), việc đóng gói (encapsulate) các tương tác hệ thống con mang lại lợi thế gì?
+A. Giúp mã nguồn chạy nhanh hơn 10 lần. B. Che giấu cấu trúc phức tạp bên trong, cho phép thay đổi hoặc bảo trì hệ thống con mà không làm ảnh hưởng đến các phần khác của hệ thống.
+C. Tạo ra giao diện đồ họa đẹp hơn. D. Loại bỏ hoàn toàn sự cần thiết của cơ sở dữ liệu.
+Đáp án đúng:  B
+</textarea>
+</body>
+</html>

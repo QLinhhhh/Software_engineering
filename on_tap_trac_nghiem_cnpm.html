@@ -301,6 +301,40 @@
       return QUIZ_DATA.questions.filter(q => q.chapter === chapter);
     }
 
+    function getBalancedMixedQuestions(count) {
+      const groups = QUIZ_DATA.chapters
+        .map(ch => shuffle(QUIZ_DATA.questions.filter(q => q.chapter === ch.id)))
+        .filter(group => group.length > 0);
+
+      const chosenGroups = count >= groups.length ? groups : shuffle(groups).slice(0, count);
+      const selected = [];
+
+      chosenGroups.forEach(group => {
+        const first = group.shift();
+        if (first) selected.push(first);
+      });
+
+      let remaining = count - selected.length;
+      const rotatingGroups = shuffle(chosenGroups.filter(group => group.length > 0));
+      let cursor = 0;
+
+      while (remaining > 0 && rotatingGroups.length > 0) {
+        const group = rotatingGroups[cursor % rotatingGroups.length];
+        const next = group.shift();
+        if (next) {
+          selected.push(next);
+          remaining -= 1;
+        }
+        if (group.length === 0) {
+          rotatingGroups.splice(cursor % rotatingGroups.length, 1);
+        } else {
+          cursor += 1;
+        }
+      }
+
+      return shuffle(selected);
+    }
+
     function updatePoolInfo() {
       const pool = getPool();
       $("poolCount").textContent = pool.length;
@@ -346,7 +380,9 @@
       const pool = getPool();
       const count = Math.max(1, Math.min(Number(questionCount.value) || 1, pool.length));
       if (newRandom || state.current.length === 0) {
-        state.current = shuffle(pool).slice(0, count);
+        state.current = chapterSelect.value === "all"
+          ? getBalancedMixedQuestions(count)
+          : shuffle(pool).slice(0, count);
       } else {
         state.current = state.current.slice(0, count);
       }
